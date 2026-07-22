@@ -1,0 +1,11 @@
+[project]
+name = "virtual-avatar-intelligent-driving-system"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "live2d-py>=0.7.0.4",
+    "pygame>=2.6.1",
+    "PyOpenGL>=3.1.9",
+]
