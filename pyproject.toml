@@ -3,9 +3,21 @@ name = "virtual-avatar-intelligent-driving-system"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "live2d-py>=0.7.0.4",
+    "funasr>=1.1.0",
+    "mediapipe>=0.10.14",
     "pygame>=2.6.1",
     "PyOpenGL>=3.1.9",
+    "opencv-python>=4.10.0.84",
+    "sounddevice>=0.5.5",
+    "torch>=2.13.0",
+    "torchaudio>=2.11.0",
+    "openai>=1.0.0",
+    "langchain-openai>=0.2.0",
+    "transformers>=4.44.0",
 ]
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cpu"

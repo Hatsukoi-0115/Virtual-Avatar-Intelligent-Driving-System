@@ -12,4 +12,8 @@ wheels/
 # Model assets
 models/
 
-.github/
+# Generated validation assets
+scripts/poc/assets/
+
+# Environment secrets
+.env
