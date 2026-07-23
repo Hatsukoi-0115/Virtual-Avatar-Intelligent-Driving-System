@@ -38,7 +38,7 @@ flowchart TD
 - **情绪分类**：Hugging Face `transformers`
 - **渲染**：`live2d-py` / 当前已验证封装
 - **并发**：`threading` / `asyncio` / 队列
-- **配置**：`pydantic` 或统一配置模块
+- **配置**：`dataclass`（优先），`pydantic` 作为候选
 - **日志**：`logging`
 
 ---
@@ -72,7 +72,7 @@ flowchart TD
 ### 4.3 技术栈
 - `PySide6`
 - `Qt`
-- `pydantic` 配置模型
+- `dataclass`（优先）或 `pydantic` 配置模型
 - `json` / `toml`
 - `logging`
 
@@ -245,7 +245,7 @@ class SemanticResult:
 7. 与各输入链路联调
 
 ### 6.3 技术栈
-- `dataclasses` / `pydantic`
+- `dataclasses`（优先），`pydantic` 作为候选
 - `queue`
 - `threading`
 - `logging`
