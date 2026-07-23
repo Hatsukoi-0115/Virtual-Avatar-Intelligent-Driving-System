@@ -1,0 +1,20 @@
+{
+  "camera_index": 1,
+  "microphone_index": 0,
+  "camera_width": 320,
+  "camera_height": 240,
+  "camera_fps": 10,
+  "mic_sample_rate": 16000,
+  "mic_block_size": 1600,
+  "model_path": "",
+  "llm_base_url": "",
+  "llm_api_key": "",
+  "llm_model": "",
+  "preview_visible": false,
+  "preview_width": 360,
+  "preview_height": 640,
+  "preview_always_on_top": false,
+  "visual_feature_fps": 30,
+  "asr_refresh_ms": 200,
+  "llm_min_interval_ms": 5000
+}

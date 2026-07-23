@@ -122,7 +122,7 @@ uv run pytest
 
 - pathlib.Path
 - Enum
-- Pydantic
+- dataclass
 - typing
 
 ---
