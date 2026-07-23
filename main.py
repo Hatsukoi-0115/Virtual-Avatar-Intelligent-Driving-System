@@ -26,10 +26,11 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from virtual_avatar_system.config.app_config import load_config, save_config
-from virtual_avatar_system.ui.live_state_machine import LiveState
+from virtual_avatar_system.controller.avatar_controller import AvatarController, AvatarInputState
 from virtual_avatar_system.ui.main_window import MainWindow
 from virtual_avatar_system.ui.preview_window import PreviewWindow
 from virtual_avatar_system.ui.system_tray import AppSystemTray
+from virtual_avatar_system.renderer.live2d_renderer import Live2DRenderer
 from virtual_avatar_system.vision.camera_source import CameraFrameSource
 from virtual_avatar_system.vision.face_inference import FaceLandmarkInferencer
 
@@ -70,6 +71,10 @@ def main() -> None:
 
     main_window.set_system_tray(tray)
 
+    # ---- 融合层与渲染层 ----
+    avatar_controller = AvatarController()
+    live2d_renderer = Live2DRenderer()
+
     # ---- 视觉链路：摄像头采集 + MediaPipe 推理 ----
     camera_source = CameraFrameSource(
         camera_index=config.camera_index,
@@ -94,7 +99,7 @@ def main() -> None:
 
     feed_timer.timeout.connect(_feed_frames)
 
-    # 桥接定时器：推理结果 → 日志报告（后续对接 Avatar Controller）
+    # 桥接定时器：推理结果 → Avatar Controller → Live2D 渲染
     consume_timer = QTimer()
     consume_timer.setInterval(33)
     last_report_time = 0.0
@@ -105,6 +110,14 @@ def main() -> None:
         if not packets:
             return
         latest = packets[-1]
+        avatar_controller.ingest(
+            AvatarInputState(
+                visual=latest,
+                timestamp=latest.timestamp,
+            )
+        )
+        avatar_output = avatar_controller.resolve()
+        live2d_renderer.submit_state(avatar_output)
         now = time.time()
         if now - last_report_time >= 5.0:
             logger.info(
@@ -118,10 +131,19 @@ def main() -> None:
 
     consume_timer.timeout.connect(_consume_features)
 
+    def _shutdown_runtime() -> None:
+        """停止视觉采集、推理和渲染链路。"""
+        feed_timer.stop()
+        consume_timer.stop()
+        inferencer.stop()
+        camera_source.stop()
+        live2d_renderer.stop()
+
     # ---- 开始 / 停止事件 ----
     def on_start() -> None:
         logger.info("开始直播")
         try:
+            live2d_renderer.start(Path(config.model_path))
             camera_source.start()
             inferencer.start()
             feed_timer.start()
@@ -129,14 +151,12 @@ def main() -> None:
             main_window.state_machine.on_ready()
         except Exception as exc:  # noqa: BLE001
             logger.exception("启动视觉链路失败")
+            _shutdown_runtime()
             main_window.state_machine.on_error(str(exc))
 
     def on_stop() -> None:
         logger.info("停止直播")
-        feed_timer.stop()
-        consume_timer.stop()
-        inferencer.stop()
-        camera_source.stop()
+        _shutdown_runtime()
         main_window.state_machine.on_stopped()
 
     main_window.on_start(on_start)
@@ -146,6 +166,7 @@ def main() -> None:
     def _quit_application() -> None:
         """统一退出函数，供关闭按钮、Ctrl+C、托盘菜单复用。"""
         logger.info("开始执行退出流程…")
+        _shutdown_runtime()
         save_config(main_window.config)
         preview.close()
         main_window.close()

@@ -131,9 +131,10 @@ class FaceLandmarkInferencer:
             base_options=BaseOptions(model_asset_path=str(MODEL_ASSET_PATH)),
             running_mode=vision.RunningMode.VIDEO,
             num_faces=1,
-            min_face_detection_confidence=0.5,
-            min_face_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
+            # 适当降低阈值，提升半遮挡、侧脸、画面边缘等情况下的人脸保持能力。
+            min_face_detection_confidence=0.3,
+            min_face_presence_confidence=0.3,
+            min_tracking_confidence=0.3,
             output_face_blendshapes=False,
             output_facial_transformation_matrixes=False,
         )
@@ -191,8 +192,9 @@ class FaceLandmarkInferencer:
                 nose = landmarks[1]
                 eye_center_x = ((landmarks[33].x + landmarks[133].x) + (landmarks[362].x + landmarks[263].x)) / 4.0
                 eye_center_y = ((landmarks[159].y + landmarks[145].y) + (landmarks[386].y + landmarks[374].y)) / 4.0
-                packet.head_yaw = max(-1.0, min(1.0, (nose.x - eye_center_x) / 0.18))
-                packet.head_pitch = max(-1.0, min(1.0, (eye_center_y - nose.y) / 0.18))
+                # 提高偏移灵敏度：在脸部只露出一部分时，也更容易把数值推到饱和区间。
+                packet.head_yaw = max(-1.0, min(1.0, (nose.x - eye_center_x) / 0.12))
+                packet.head_pitch = max(-1.0, min(1.0, (eye_center_y - nose.y) / 0.12))
 
                 # 头部滚转：双眼连线斜率 → 角度，再归一化到 [-1, 1]
                 packet.head_roll = max(

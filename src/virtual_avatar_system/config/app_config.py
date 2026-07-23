@@ -17,6 +17,7 @@ LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
 CONFIG_DIR: Final[Path] = PROJECT_ROOT / "configs"
 CONFIG_FILE: Final[Path] = CONFIG_DIR / "app_config.json"
+DEFAULT_MODEL_PATH: Final[Path] = PROJECT_ROOT / "models" / "haru_ja" / "runtime" / "haru.model3.json"
 
 
 @dataclass(slots=True)
@@ -40,7 +41,7 @@ class AppConfig:
     mic_block_size: int = 1600
 
     # ---- Live2D 模型路径 ----
-    model_path: str = str(PROJECT_ROOT / "models" / "haru_ja" / "runtime" / "haru.model3.json")
+    model_path: str = str(DEFAULT_MODEL_PATH)
 
     # ---- LLM 配置 ----
     llm_base_url: str = ""
@@ -69,6 +70,9 @@ def load_config() -> AppConfig:
         with CONFIG_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
         config = AppConfig(**data)
+        if not config.model_path.strip() or not Path(config.model_path).exists():
+            config.model_path = str(DEFAULT_MODEL_PATH)
+            LOGGER.warning("配置中的模型路径无效，已回退到默认值：%s", config.model_path)
         LOGGER.info("已加载配置：%s", CONFIG_FILE)
         return config
     except (json.JSONDecodeError, TypeError) as exc:

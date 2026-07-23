@@ -6,7 +6,7 @@
   "camera_fps": 10,
   "mic_sample_rate": 16000,
   "mic_block_size": 1600,
-  "model_path": "",
+  "model_path": "D:\\PT\\Virtual Avatar Intelligent Driving System\\models\\haru_ja\\runtime\\haru.model3.json",
   "llm_base_url": "",
   "llm_api_key": "",
   "llm_model": "",

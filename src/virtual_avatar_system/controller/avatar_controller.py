@@ -114,9 +114,9 @@ class AvatarController:
         # 视觉特征映射
         visual = self._input.visual
         if visual and visual.face_detected:
-            # 头部姿态：归一化值 [-1, 1] 映射到 Live2D 角度 [-30°, 30°]
-            output.param_angle_x = max(-30.0, min(30.0, visual.head_yaw * 30.0))
-            output.param_angle_y = max(-30.0, min(30.0, visual.head_pitch * 30.0))
+            # 头部姿态：归一化值 [-1, 1] 映射到 Live2D 角度
+            output.param_angle_x = max(-60.0, min(60.0, visual.head_yaw * 60.0))
+            output.param_angle_y = max(-60.0, min(60.0, visual.head_pitch * 60.0))
             output.param_angle_z = max(-30.0, min(30.0, visual.head_roll * 30.0))
 
             # 眼部：0=闭合, 1=睁开
