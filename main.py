@@ -1,4 +1,4 @@
-"""Live2D 多模态虚拟形象驱动系统 — 应用入口。
+﻿"""Live2D 多模态虚拟形象驱动系统 — 应用入口。
 
 职责：
 - 初始化 QApplication
@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -29,6 +30,8 @@ from virtual_avatar_system.ui.live_state_machine import LiveState
 from virtual_avatar_system.ui.main_window import MainWindow
 from virtual_avatar_system.ui.preview_window import PreviewWindow
 from virtual_avatar_system.ui.system_tray import AppSystemTray
+from virtual_avatar_system.vision.camera_source import CameraFrameSource
+from virtual_avatar_system.vision.face_inference import FaceLandmarkInferencer
 
 
 def _configure_logging() -> None:
@@ -67,30 +70,73 @@ def main() -> None:
 
     main_window.set_system_tray(tray)
 
-    # ---- 开始 / 停止事件（预留接入 Avatar Controller） ----
-    def on_start() -> None:
-        """开始直播时的回调。
+    # ---- 视觉链路：摄像头采集 + MediaPipe 推理 ----
+    camera_source = CameraFrameSource(
+        camera_index=config.camera_index,
+        width=config.camera_width,
+        height=config.camera_height,
+        fps=config.camera_fps,
+    )
+    inferencer = FaceLandmarkInferencer()
 
-        后续在这里：
-        - 启动摄像头采集线程
-        - 启动麦克风采集线程
-        - 启动 Avatar Controller
-        - 调用 state_machine.on_ready()
-        """
-        logger.info("开始直播（骨架阶段，尚未接入感知模块）")
-        # 模拟所有模块就绪
-        main_window.state_machine.on_ready()
+    # 桥接定时器：摄像头帧 → 推理器
+    feed_timer = QTimer()
+    feed_timer.setInterval(16)
+
+    def _feed_frames() -> None:
+        for frame_packet in camera_source.pop_frames():
+            if frame_packet.bgr_data:
+                inferencer.feed_frame(
+                    frame_packet.bgr_data,
+                    frame_packet.width,
+                    frame_packet.height,
+                )
+
+    feed_timer.timeout.connect(_feed_frames)
+
+    # 桥接定时器：推理结果 → 日志报告（后续对接 Avatar Controller）
+    consume_timer = QTimer()
+    consume_timer.setInterval(33)
+    last_report_time = 0.0
+
+    def _consume_features() -> None:
+        nonlocal last_report_time
+        packets = inferencer.pop_features()
+        if not packets:
+            return
+        latest = packets[-1]
+        now = time.time()
+        if now - last_report_time >= 5.0:
+            logger.info(
+                "视觉推理中：帧=%s 检测=%s 嘴部=%.2f 推理=%.1fms",
+                latest.frame_index,
+                "有" if latest.face_detected else "无",
+                latest.mouth_open,
+                latest.inference_ms,
+            )
+            last_report_time = now
+
+    consume_timer.timeout.connect(_consume_features)
+
+    # ---- 开始 / 停止事件 ----
+    def on_start() -> None:
+        logger.info("开始直播")
+        try:
+            camera_source.start()
+            inferencer.start()
+            feed_timer.start()
+            consume_timer.start()
+            main_window.state_machine.on_ready()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("启动视觉链路失败")
+            main_window.state_machine.on_error(str(exc))
 
     def on_stop() -> None:
-        """停止直播时的回调。
-
-        后续在这里：
-        - 停止所有采集线程
-        - 释放 Avatar Controller
-        - 调用 state_machine.on_stopped()
-        """
-        logger.info("停止直播（骨架阶段，尚未接入感知模块）")
-        # 模拟资源释放完成
+        logger.info("停止直播")
+        feed_timer.stop()
+        consume_timer.stop()
+        inferencer.stop()
+        camera_source.stop()
         main_window.state_machine.on_stopped()
 
     main_window.on_start(on_start)
