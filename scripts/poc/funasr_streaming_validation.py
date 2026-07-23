@@ -175,6 +175,7 @@ def main() -> None:
                     chunk,
                     cache=cache,
                     is_final=False,
+                    disable_pbar=True,
                     **STREAM_CFG,
                 )
                 infer_elapsed = time.perf_counter() - infer_start
@@ -186,12 +187,6 @@ def main() -> None:
                     stats.last_partial_text = text
                     elapsed = time.perf_counter() - stream_start
                     _print_text_line("PARTIAL", text, elapsed)
-                    LOGGER.info(
-                        "chunk=%s infer=%.3fs rtf=%.2f",
-                        stats.chunks,
-                        infer_elapsed,
-                        infer_elapsed / max(len(chunk) / SAMPLE_RATE, 1e-6),
-                    )
 
     except KeyboardInterrupt:
         LOGGER.info("收到 Ctrl+C，准备刷新最终结果")
@@ -210,6 +205,7 @@ def main() -> None:
                 tail_audio,
                 cache=cache,
                 is_final=True,
+                disable_pbar=True,
                 **STREAM_CFG,
             )
             final_text = _extract_text(final_result)
