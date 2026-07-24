@@ -129,6 +129,18 @@ class SettingsPage(QWidget):
 
     def _load_from_config(self) -> None:
         """把 AppConfig 字段同步到 UI 控件。"""
+        # 初始化时阻塞信号，避免控件值变更触发保存逻辑覆盖配置
+        for widget in (
+            self._camera_combo,
+            self._mic_combo,
+            self._camera_width,
+            self._camera_height,
+            self._camera_fps,
+            self._preview_always_on_top,
+            self._model_path_edit,
+        ):
+            widget.blockSignals(True)
+
         self._camera_combo.setCurrentIndex(self._config.camera_index)
         self._mic_combo.setCurrentIndex(self._config.microphone_index)
         self._camera_width.setValue(self._config.camera_width)
@@ -136,6 +148,18 @@ class SettingsPage(QWidget):
         self._camera_fps.setValue(self._config.camera_fps)
         self._preview_always_on_top.setChecked(self._config.preview_always_on_top)
         self._model_path_edit.setText(self._config.model_path)
+
+        # 填充完成后恢复信号
+        for widget in (
+            self._camera_combo,
+            self._mic_combo,
+            self._camera_width,
+            self._camera_height,
+            self._camera_fps,
+            self._preview_always_on_top,
+            self._model_path_edit,
+        ):
+            widget.blockSignals(False)
 
     def _on_setting_changed(self) -> None:
         """控件值变更 -> 写入 AppConfig -> 通知外部。"""
