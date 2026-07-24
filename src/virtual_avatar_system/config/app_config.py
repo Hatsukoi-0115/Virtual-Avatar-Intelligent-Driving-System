@@ -40,6 +40,16 @@ class AppConfig:
     mic_sample_rate: int = 16000
     mic_block_size: int = 1600
 
+    # ---- 语音识别与自然句切分 ----
+    asr_model: str = "paraformer-zh-streaming"
+    # 调试重点：自然语句结束停顿阈值。调小会更快换行和触发 LLM，调大会等待更完整的句子。
+    speech_pause_threshold_ms: int = 1200
+    # 默认不打印 ASR 原文；后续调试语音识别时可改为 true。
+    debug_print_asr_text: bool = False
+
+    # ---- 情绪模型 ----
+    emotion_model_path: str = str(PROJECT_ROOT / "models" / "hf_cache" / "Johnson8187__Chinese-Emotion-Small")
+
     # ---- Live2D 模型路径 ----
     model_path: str = str(DEFAULT_MODEL_PATH)
 

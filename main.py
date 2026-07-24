@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import signal
 import sys
-import time
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -27,6 +26,10 @@ if str(SRC_DIR) not in sys.path:
 
 from virtual_avatar_system.config.app_config import load_config, save_config
 from virtual_avatar_system.controller.avatar_controller import AvatarController, AvatarInputState
+from virtual_avatar_system.audio.live_speech_service import (
+    LiveSpeechServiceConfig,
+    LiveSpeechUnderstandingService,
+)
 from virtual_avatar_system.ui.main_window import MainWindow
 from virtual_avatar_system.ui.preview_window import PreviewWindow
 from virtual_avatar_system.ui.system_tray import AppSystemTray
@@ -55,6 +58,7 @@ def main() -> None:
 
     # ---- 加载配置 ----
     config = load_config()
+    speech_service: LiveSpeechUnderstandingService | None = None
 
     # ---- 创建窗口 ----
     preview = PreviewWindow()
@@ -102,10 +106,8 @@ def main() -> None:
     # 桥接定时器：推理结果 → Avatar Controller → Live2D 渲染
     consume_timer = QTimer()
     consume_timer.setInterval(33)
-    last_report_time = 0.0
 
     def _consume_features() -> None:
-        nonlocal last_report_time
         packets = inferencer.pop_features()
         if not packets:
             return
@@ -118,16 +120,8 @@ def main() -> None:
         )
         avatar_output = avatar_controller.resolve()
         live2d_renderer.submit_state(avatar_output)
-        now = time.time()
-        if now - last_report_time >= 5.0:
-            logger.info(
-                "视觉推理中：帧=%s 检测=%s 嘴部=%.2f 推理=%.1fms",
-                latest.frame_index,
-                "有" if latest.face_detected else "无",
-                latest.mouth_open,
-                latest.inference_ms,
-            )
-            last_report_time = now
+        # 视觉链路仍持续运行并驱动 Live2D；终端默认不输出视觉推理结果。
+        # 后续调试视觉链路时，可在这里临时打开 logger.debug / logger.info。
 
     consume_timer.timeout.connect(_consume_features)
 
@@ -139,23 +133,60 @@ def main() -> None:
         camera_source.stop()
         live2d_renderer.stop()
 
-    # ---- 开始 / 停止事件 ----
+    # ---- 语音、情绪与 LLM 链路 ----
+    def _shutdown_speech() -> None:
+        """停止 C 链路并释放麦克风与 FunASR 资源。"""
+        nonlocal speech_service
+        if speech_service is not None:
+            speech_service.stop()
+            speech_service = None
+
+    # ---- 开始 / 停止事件：B 视觉 + C 语音/情绪/LLM + D 渲染 ----
     def on_start() -> None:
-        logger.info("开始直播")
+        """开始直播时的回调。
+
+        当前已接入：
+        - 摄像头采集线程
+        - MediaPipe 视觉推理线程
+        - Avatar Controller 与 Live2D 渲染进程
+        - 麦克风采集线程
+        - FunASR 流式识别
+        - 中文分词后的情绪分类
+        - 自然句结束后的 LLM 标签匹配
+        """
+        nonlocal speech_service
+        logger.info("开始直播：启动视觉、渲染、语音/情绪/LLM 链路")
         try:
             live2d_renderer.start(Path(config.model_path))
             camera_source.start()
             inferencer.start()
             feed_timer.start()
             consume_timer.start()
+
+            if speech_service is None:
+                speech_service = LiveSpeechUnderstandingService(
+                    LiveSpeechServiceConfig.from_app_config(main_window.config)
+                )
+            speech_service.start()
             main_window.state_machine.on_ready()
         except Exception as exc:  # noqa: BLE001
-            logger.exception("启动视觉链路失败")
+            logger.exception("启动直播链路失败")
+            _shutdown_speech()
             _shutdown_runtime()
             main_window.state_machine.on_error(str(exc))
 
     def on_stop() -> None:
-        logger.info("停止直播")
+        """停止直播时的回调。
+
+        当前已接入：
+        - 停止视觉采集和推理
+        - 停止 Live2D 渲染进程
+        - 停止麦克风采集
+        - 释放 FunASR 识别器
+        - 停止 C 链路后台线程
+        """
+        logger.info("停止直播：释放视觉、渲染、语音/情绪/LLM 链路")
+        _shutdown_speech()
         _shutdown_runtime()
         main_window.state_machine.on_stopped()
 
@@ -166,6 +197,7 @@ def main() -> None:
     def _quit_application() -> None:
         """统一退出函数，供关闭按钮、Ctrl+C、托盘菜单复用。"""
         logger.info("开始执行退出流程…")
+        _shutdown_speech()
         _shutdown_runtime()
         save_config(main_window.config)
         preview.close()
