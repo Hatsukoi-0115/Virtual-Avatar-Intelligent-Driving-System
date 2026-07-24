@@ -36,6 +36,25 @@ MODEL_DOWNLOAD_URL: Final[str] = (
 )
 
 
+# 眼睛开合锐化过渡带
+_EYE_SHARPEN_LOW = 0.35
+_EYE_SHARPEN_HIGH = 0.65
+
+
+def _sharpen_eye(value: float) -> float:
+    """把眼睛开合值推向 0 或 1 两端，减少半睁眼状态。
+
+    使用 smoothstep 在 [_EYE_SHARPEN_LOW, _EYE_SHARPEN_HIGH] 过渡带内
+    快速从 0 切到 1，过渡平滑避免眨眼闪烁。
+    """
+    if value <= _EYE_SHARPEN_LOW:
+        return 0.0
+    if value >= _EYE_SHARPEN_HIGH:
+        return 1.0
+    t = (value - _EYE_SHARPEN_LOW) / (_EYE_SHARPEN_HIGH - _EYE_SHARPEN_LOW)
+    return 3.0 * t * t - 2.0 * t * t * t
+
+
 class FaceLandmarkInferencer:
     """MediaPipe Face Landmarker 推理器。
 
@@ -178,6 +197,14 @@ class FaceLandmarkInferencer:
                 right_eye_width = abs(landmarks[362].x - landmarks[263].x)
                 mouth_width = abs(landmarks[291].x - landmarks[61].x)
 
+                # 先计算头部偏航，用于后续眼睛透视补偿
+                nose = landmarks[1]
+                eye_center_x = ((landmarks[33].x + landmarks[133].x) + (landmarks[362].x + landmarks[263].x)) / 4.0
+                eye_center_y = ((landmarks[159].y + landmarks[145].y) + (landmarks[386].y + landmarks[374].y)) / 4.0
+                face_width = max(abs(landmarks[263].x - landmarks[33].x), 1e-6)
+                raw_yaw = max(-1.0, min(1.0, (nose.x - eye_center_x) / (face_width * 0.5) * 1.5))
+                packet.head_yaw = raw_yaw
+
                 # 嘴部张开：上下唇间距 / 嘴宽
                 mouth_gap = abs(landmarks[13].y - landmarks[14].y)
                 packet.mouth_open = min(1.0, max(0.0, mouth_gap / max(mouth_width, 1e-6) * 2.5))
@@ -185,16 +212,36 @@ class FaceLandmarkInferencer:
                 # 左右眼开合：上下眼睑间距 / 眼宽
                 left_eye_gap = abs(landmarks[159].y - landmarks[145].y)
                 right_eye_gap = abs(landmarks[386].y - landmarks[374].y)
-                packet.eye_open_left = min(1.0, max(0.0, left_eye_gap / max(left_eye_width, 1e-6) * 2.2))
-                packet.eye_open_right = min(1.0, max(0.0, right_eye_gap / max(right_eye_width, 1e-6) * 2.2))
+                left_ratio = left_eye_gap / max(left_eye_width, 1e-6) * 2.2
+                right_ratio = right_eye_gap / max(right_eye_width, 1e-6) * 2.2
 
-                # 头部偏航/俯仰：鼻尖相对眼部中心的位置
-                nose = landmarks[1]
-                eye_center_x = ((landmarks[33].x + landmarks[133].x) + (landmarks[362].x + landmarks[263].x)) / 4.0
-                eye_center_y = ((landmarks[159].y + landmarks[145].y) + (landmarks[386].y + landmarks[374].y)) / 4.0
-                # 提高偏移灵敏度：在脸部只露出一部分时，也更容易把数值推到饱和区间。
-                packet.head_yaw = max(-1.0, min(1.0, (nose.x - eye_center_x) / 0.12))
-                packet.head_pitch = max(-1.0, min(1.0, (eye_center_y - nose.y) / 0.12))
+                # 透视补偿：头部偏航时远侧眼睛被压缩，比值偏小
+                # yaw > 0（右转）→ 右眼远，补偿右眼；yaw < 0（左转）→ 左眼远，补偿左眼
+                # 补偿系数随偏航幅度增大，最大约 40%
+                _COMPENSATION = 0.4
+                if raw_yaw > 0:
+                    right_ratio_comp = right_ratio * (1.0 + raw_yaw * _COMPENSATION)
+                    left_ratio_comp = left_ratio
+                else:
+                    left_ratio_comp = left_ratio * (1.0 + (-raw_yaw) * _COMPENSATION)
+                    right_ratio_comp = right_ratio
+
+                # 补偿后比较：差异仍大说明是真眨眼（单眼闭合），保留独立值
+                # 差异小说明是透视假象，取平均保持对称
+                if abs(left_ratio_comp - right_ratio_comp) > 0.35:
+                    packet.eye_open_left = _sharpen_eye(min(1.0, max(0.0, left_ratio_comp)))
+                    packet.eye_open_right = _sharpen_eye(min(1.0, max(0.0, right_ratio_comp)))
+                else:
+                    avg_ratio = (left_ratio_comp + right_ratio_comp) / 2.0
+                    sharpened = _sharpen_eye(min(1.0, max(0.0, avg_ratio)))
+                    packet.eye_open_left = sharpened
+                    packet.eye_open_right = sharpened
+
+                # 俯仰：鼻尖到眼部中心的垂直距离 / 面宽
+                # 正视时鼻尖在眼睛下方，比值为正值（约 0.35），减去中性偏移使正视归零
+                # 翻转符号：抬头时鼻尖上移 → 比值变小 → 结果为正；低头时比值变大 → 结果为负
+                pitch_ratio = (nose.y - eye_center_y) / face_width
+                packet.head_pitch = max(-1.0, min(1.0, (0.35 - pitch_ratio) * 3.5))
 
                 # 头部滚转：双眼连线斜率 → 角度，再归一化到 [-1, 1]
                 packet.head_roll = max(
