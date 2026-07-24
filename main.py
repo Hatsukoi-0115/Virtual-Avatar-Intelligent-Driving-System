@@ -82,6 +82,15 @@ def main() -> None:
     # ---- 融合层与渲染层 ----
     avatar_controller = AvatarController()
     live2d_renderer = Live2DRenderer()
+    # 当前情绪表情 ID，由语音链路回调更新，供视觉桥接定时器带入 AvatarInputState
+    latest_expression = "Normal"
+
+    def _on_emotion(expression_id: str, confidence: float) -> None:
+        """语音情绪分类回调：更新当前表情，下一帧渲染时生效。"""
+        nonlocal latest_expression
+        if expression_id != latest_expression:
+            logger.info("表情切换：%s → %s（置信度 %.2f）", latest_expression, expression_id, confidence)
+        latest_expression = expression_id
 
     # ---- 视觉链路：摄像头采集 + MediaPipe 推理 ----
     camera_source = CameraFrameSource(
@@ -119,6 +128,7 @@ def main() -> None:
         avatar_controller.ingest(
             AvatarInputState(
                 visual=latest,
+                expression=latest_expression,
                 timestamp=latest.timestamp,
             )
         )
@@ -180,6 +190,7 @@ def main() -> None:
                 speech_service = LiveSpeechUnderstandingService(
                     LiveSpeechServiceConfig.from_app_config(main_window.config)
                 )
+                speech_service.on_emotion(_on_emotion)
             speech_service.start()
         except Exception as exc:  # noqa: BLE001
             logger.warning("语音/情绪/LLM 链路启动失败，仅保留视觉驱动：%s", exc)

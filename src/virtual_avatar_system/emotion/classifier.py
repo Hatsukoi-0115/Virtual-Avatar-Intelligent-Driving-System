@@ -27,6 +27,26 @@ LABEL_MAPPING: Final[dict[int, str]] = {
     7: "厌恶",
 }
 
+# 情绪标签到 Live2D 表情 ID 的映射
+# 表情文件：Angry / Blushing / f01 / f02 / Normal / Sad / Smile / Surprised
+# 对应关系（按分类器索引）：0→Normal 1→Blushing 2→Smile 3→Angry 4→Sad 5/6→Surprised 7→f02
+EMOTION_TO_EXPRESSION: Final[dict[str, str]] = {
+    "平静": "Normal",
+    "关切": "Blushing",
+    "开心": "Smile",
+    "愤怒": "Angry",
+    "难过": "Sad",
+    "疑问": "Surprised",
+    "惊讶": "Surprised",
+    "厌恶": "f02",
+}
+
+
+def emotion_to_expression(label: str) -> str:
+    """把情绪标签转换为 Live2D 表情 ID，未知标签回退为 Normal。"""
+    return EMOTION_TO_EXPRESSION.get(label, "Normal")
+
+
 RULE_KEYWORDS: Final[dict[str, tuple[str, ...]]] = {
     "开心": ("开心", "太好了", "棒", "哈哈", "喜欢", "完成了"),
     "愤怒": ("生气", "过分", "讨厌", "受不了", "不对", "气死"),

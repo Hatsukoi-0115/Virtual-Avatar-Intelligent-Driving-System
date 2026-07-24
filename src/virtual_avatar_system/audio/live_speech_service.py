@@ -6,12 +6,13 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from typing import Callable
 
 from virtual_avatar_system.audio.funasr_streaming import FunAsrConfig, FunAsrStreamingRecognizer
 from virtual_avatar_system.audio.sentence_accumulator import SentenceAccumulator
 from virtual_avatar_system.audio.source import AudioStreamConfig, AudioStreamSource
 from virtual_avatar_system.config.app_config import AppConfig, resolve_project_path
-from virtual_avatar_system.emotion.classifier import EmotionClassifier, EmotionClassifierConfig
+from virtual_avatar_system.emotion.classifier import EmotionClassifier, EmotionClassifierConfig, emotion_to_expression
 from virtual_avatar_system.llm.semantic import SemanticInterpreter, SemanticInterpreterConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -78,6 +79,12 @@ class LiveSpeechUnderstandingService:
         self._last_emotion_chars = 0
         self._last_emotion_at = 0.0
         self._emotion_threshold = config.emotion_confidence_threshold
+        # 情绪→表情回调，主线程注册后在此触发
+        self._on_emotion: Callable[[str, float], None] | None = None
+
+    def on_emotion(self, callback: Callable[[str, float], None]) -> None:
+        """注册情绪→表情回调，参数为 (表情ID, 置信度)。"""
+        self._on_emotion = callback
 
     @property
     def running(self) -> bool:
@@ -231,6 +238,14 @@ class LiveSpeechUnderstandingService:
         )
         self._last_emotion_chars = len(sentence)
         self._last_emotion_at = time.monotonic()
+
+        # 通过回调把情绪标签映射为 Live2D 表情 ID，通知主线程
+        expression_id = emotion_to_expression(emotion.label)
+        if self._on_emotion is not None:
+            try:
+                self._on_emotion(expression_id, emotion.confidence)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("情绪回调异常：%s", exc)
 
     def _reset_sentence_state(self) -> None:
         """重置自然句缓存和情绪去抖状态。"""
