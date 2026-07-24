@@ -7,7 +7,6 @@ import threading
 import time
 from dataclasses import dataclass
 
-from virtual_avatar_system.audio.chinese_segmenter import ChineseTokenStream
 from virtual_avatar_system.audio.funasr_streaming import FunAsrConfig, FunAsrStreamingRecognizer
 from virtual_avatar_system.audio.sentence_accumulator import SentenceAccumulator
 from virtual_avatar_system.audio.source import AudioStreamConfig, AudioStreamSource
@@ -16,6 +15,12 @@ from virtual_avatar_system.emotion.classifier import EmotionClassifier, EmotionC
 from virtual_avatar_system.llm.semantic import SemanticInterpreter, SemanticInterpreterConfig
 
 LOGGER = logging.getLogger(__name__)
+
+# 情绪分类去抖参数
+_EMOTION_MIN_CHARS = 4
+_EMOTION_MIN_NEW_CHARS = 3
+_EMOTION_MIN_INTERVAL_MS = 500
+_EMOTION_CONFIDENCE_THRESHOLD = 0.5
 
 
 @dataclass(slots=True)
@@ -26,9 +31,11 @@ class LiveSpeechServiceConfig:
     asr: FunAsrConfig
     emotion: EmotionClassifierConfig
     llm: SemanticInterpreterConfig
-    # 调试重点：自然语句结束停顿阈值。调小会更快触发换行和 LLM，调大会等待更完整的句子。
+    # 调试重置点：自然语句结束停顿阈值。调小会更快触发换行和 LLM，调大会等待更完整的句子。
     pause_threshold_ms: int = 1200
     debug_print_asr_text: bool = False
+    # 情绪分类置信度阈值，低于此值的结果被舍弃，不输出
+    emotion_confidence_threshold: float = _EMOTION_CONFIDENCE_THRESHOLD
 
     @classmethod
     def from_app_config(cls, app_config: AppConfig) -> "LiveSpeechServiceConfig":
@@ -53,7 +60,7 @@ class LiveSpeechServiceConfig:
 
 
 class LiveSpeechUnderstandingService:
-    """在后台线程中运行麦克风、FunASR、情绪分类和 LLM 语义理解。"""
+    """在后台线程中运行麦克风风、FunASR、情绪分类和 LLM 语义理解。"""
 
     def __init__(self, config: LiveSpeechServiceConfig) -> None:
         self.config = config
@@ -62,12 +69,15 @@ class LiveSpeechUnderstandingService:
         self.emotion_classifier = EmotionClassifier(config.emotion)
         self.semantic_interpreter = SemanticInterpreter(config.llm)
         self._sentence_accumulator = SentenceAccumulator()
-        self._token_stream = ChineseTokenStream()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_text_at = 0.0
         self._sentence_text = ""
         self._sentence_closed = True
+        # 情绪分类去抖状态
+        self._last_emotion_chars = 0
+        self._last_emotion_at = 0.0
+        self._emotion_threshold = config.emotion_confidence_threshold
 
     @property
     def running(self) -> bool:
@@ -82,7 +92,11 @@ class LiveSpeechUnderstandingService:
         self._stop_event.clear()
         self._reset_sentence_state()
         self.audio_source.start()
-        self._thread = threading.Thread(target=self._run_loop, name="live-speech-understanding", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="live-speech-understanding",
+            daemon=True,
+        )
         self._thread.start()
         print("[C] 语音/情绪/LLM 链路已启动", flush=True)
 
@@ -112,7 +126,6 @@ class LiveSpeechUnderstandingService:
                     LOGGER.warning("ASR 结果异常：%s", asr_result.error)
                     continue
 
-                # ASR 原文调试开关：默认不输出，后续排查识别问题时打开 debug_print_asr_text。
                 if self.config.debug_print_asr_text and asr_result.text:
                     print(f"[ASR] {asr_result.text}", flush=True)
 
@@ -124,7 +137,7 @@ class LiveSpeechUnderstandingService:
             self.audio_source.stop()
 
     def _consume_asr_text(self, text: str) -> None:
-        """把新增 ASR 文本切词后送入情绪分类。"""
+        """把新增 ASR 文本累积到句子缓冲，满足条件时做整句情绪分类。"""
         normalized = text.strip()
         if not normalized:
             return
@@ -141,15 +154,11 @@ class LiveSpeechUnderstandingService:
         if self.config.debug_print_asr_text:
             print(f"[ASR_FULL] {current_sentence}", flush=True)
 
-        for token in self._token_stream.consume(current_sentence):
-            emotion = self.emotion_classifier.classify(token)
-            print(
-                f"[Emotion] 词={token} 标签={emotion.label} 置信度={emotion.confidence:.2f} 来源={emotion.source}",
-                flush=True,
-            )
+        # 整句情绪分类（带去抖），不再逐词分类
+        self._maybe_classify_emotion(current_sentence)
 
     def _check_sentence_pause(self) -> None:
-        """检测自然语句停顿，达到阈值后触发 LLM 并换行。"""
+        """检测自然句停顿，达到阈值后触发最终情绪分类和 LLM。"""
         if self._sentence_closed or not self._sentence_text or self._last_text_at <= 0:
             return
 
@@ -159,11 +168,13 @@ class LiveSpeechUnderstandingService:
 
         sentence = self._sentence_accumulator.text.strip()
         self._sentence_closed = True
-        self._token_stream.reset()
         self.recognizer.reset()
 
         if sentence:
-            # 自然句结束后必须把完整句子交给 LLM；这里强制绕过低频缓存，避免连续两句话共用旧语义。
+            # 句子结束时用完整文本做最终情绪分类
+            self._do_classify_emotion(sentence, tag="final")
+
+            # 自然句结束后把完整句子交给 LLM；强制绕过低频缓存
             semantic = self.semantic_interpreter.interpret(sentence, force=True)
             if semantic.error:
                 print(f"\n[LLM] 句子={sentence} 标签=neutral 错误={semantic.error}\n", flush=True)
@@ -175,17 +186,64 @@ class LiveSpeechUnderstandingService:
                 )
         self._reset_sentence_state()
 
+    def _maybe_classify_emotion(self, sentence: str) -> None:
+        """对累积中的句子做去抖情绪分类。
+
+        策略：
+        - 句子不足 _EMOTION_MIN_CHARS 字时跳过，避免短片段低置信度干扰
+        - 距上次分类新增不足 _EMOTION_MIN_NEW_CHARS 字时跳过，减少模型调用频率
+        - 距上次分类不足 _EMOTION_MIN_INTERVAL_MS 时跳过，防止高频触发
+        """
+        if len(sentence) < _EMOTION_MIN_CHARS:
+            return
+
+        new_chars = len(sentence) - self._last_emotion_chars
+        if new_chars < _EMOTION_MIN_NEW_CHARS:
+            return
+
+        now = time.monotonic()
+        if (now - self._last_emotion_at) * 1000 < _EMOTION_MIN_INTERVAL_MS:
+            return
+
+        self._do_classify_emotion(sentence, tag="stream")
+
+    def _do_classify_emotion(self, sentence: str, tag: str = "") -> None:
+        """执行情绪分类并输出结果，更新去抖状态。"""
+        emotion = self.emotion_classifier.classify(sentence)
+
+        # 置信度低于阈值时舍弃，不输出低质量分类结果
+        if emotion.confidence < self._emotion_threshold:
+            LOGGER.debug(
+                "情绪分类置信度 %.2f 低于阈值 %.2f，已舍弃：句子=%s",
+                emotion.confidence,
+                self._emotion_threshold,
+                sentence,
+            )
+            self._last_emotion_chars = len(sentence)
+            self._last_emotion_at = time.monotonic()
+            return
+
+        prefix = f"[Emotion/{tag}]" if tag else "[Emotion]"
+        print(
+            f'{prefix} 句子="{sentence}" 标签={emotion.label} '
+            f"置信度={emotion.confidence:.2f} 来源={emotion.source}",
+            flush=True,
+        )
+        self._last_emotion_chars = len(sentence)
+        self._last_emotion_at = time.monotonic()
+
     def _reset_sentence_state(self) -> None:
-        """重置自然句缓存。"""
+        """重置自然句缓存和情绪去抖状态。"""
         self._last_text_at = 0.0
         self._sentence_text = ""
         self._sentence_closed = True
         self._sentence_accumulator.reset()
-        self._token_stream.reset()
+        self._last_emotion_chars = 0
+        self._last_emotion_at = 0.0
 
 
 def main() -> None:
-    """允许 C 链路独立运行，方便调试麦克风、FunASR、情绪和 LLM。"""
+    """允许 C 链路独立运行，方便调试麦克风风、FunASR、情绪和 LLM。"""
     import argparse
 
     from virtual_avatar_system.config.app_config import load_config

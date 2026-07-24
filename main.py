@@ -167,17 +167,23 @@ def main() -> None:
             feed_timer.start()
             consume_timer.start()
 
+            main_window.state_machine.on_ready()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("启动视觉/渲染链路失败")
+            _shutdown_runtime()
+            main_window.state_machine.on_error(str(exc))
+            return
+
+        # 语音/情绪/LLM 链路独立启动，失败时不影响视觉驱动
+        try:
             if speech_service is None:
                 speech_service = LiveSpeechUnderstandingService(
                     LiveSpeechServiceConfig.from_app_config(main_window.config)
                 )
             speech_service.start()
-            main_window.state_machine.on_ready()
         except Exception as exc:  # noqa: BLE001
-            logger.exception("启动直播链路失败")
-            _shutdown_speech()
-            _shutdown_runtime()
-            main_window.state_machine.on_error(str(exc))
+            logger.warning("语音/情绪/LLM 链路启动失败，仅保留视觉驱动：%s", exc)
+            speech_service = None
 
     def on_stop() -> None:
         """停止直播时的回调。
