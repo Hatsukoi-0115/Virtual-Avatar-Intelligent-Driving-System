@@ -24,7 +24,11 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from virtual_avatar_system.config.app_config import load_config, save_config
+from virtual_avatar_system.utils.runtime_dependencies import ensure_ffmpeg_on_path
+
+ensure_ffmpeg_on_path()
+
+from virtual_avatar_system.config.app_config import load_config, resolve_project_path, save_config
 from virtual_avatar_system.controller.avatar_controller import AvatarController, AvatarInputState
 from virtual_avatar_system.audio.live_speech_service import (
     LiveSpeechServiceConfig,
@@ -157,7 +161,7 @@ def main() -> None:
         nonlocal speech_service
         logger.info("开始直播：启动视觉、渲染、语音/情绪/LLM 链路")
         try:
-            live2d_renderer.start(Path(config.model_path))
+            live2d_renderer.start(resolve_project_path(config.model_path))
             camera_source.start()
             inferencer.start()
             feed_timer.start()

@@ -154,12 +154,17 @@ class SemanticInterpreter:
         timestamp = now if now is not None else time.monotonic()
         return (timestamp - self._last_call_at) * 1000 >= self.config.min_interval_ms
 
-    def interpret(self, stable_text: str, context: dict[str, Any] | None = None) -> SemanticResult:
+    def interpret(
+        self,
+        stable_text: str,
+        context: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> SemanticResult:
         """对稳定文本做低频语义理解。"""
         timestamp = time.time()
         if not stable_text.strip():
             return self._last_result
-        if not self.can_call():
+        if not force and not self.can_call():
             return self._last_result
 
         self._last_call_at = time.monotonic()

@@ -19,6 +19,7 @@ dependencies = [
     "transformers>=4.44.0",
     "pyside6==6.7.3",
     "jieba>=0.42.1",
+    "imageio-ffmpeg>=0.6.0",
 ]
 
 [build-system]

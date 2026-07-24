@@ -9,8 +9,9 @@ from dataclasses import dataclass
 
 from virtual_avatar_system.audio.chinese_segmenter import ChineseTokenStream
 from virtual_avatar_system.audio.funasr_streaming import FunAsrConfig, FunAsrStreamingRecognizer
+from virtual_avatar_system.audio.sentence_accumulator import SentenceAccumulator
 from virtual_avatar_system.audio.source import AudioStreamConfig, AudioStreamSource
-from virtual_avatar_system.config.app_config import AppConfig
+from virtual_avatar_system.config.app_config import AppConfig, resolve_project_path
 from virtual_avatar_system.emotion.classifier import EmotionClassifier, EmotionClassifierConfig
 from virtual_avatar_system.llm.semantic import SemanticInterpreter, SemanticInterpreterConfig
 
@@ -39,7 +40,7 @@ class LiveSpeechServiceConfig:
                 block_size=app_config.mic_block_size,
             ),
             asr=FunAsrConfig(model=app_config.asr_model, disable_pbar=True),
-            emotion=EmotionClassifierConfig(model_path=app_config.emotion_model_path),
+            emotion=EmotionClassifierConfig(model_path=str(resolve_project_path(app_config.emotion_model_path))),
             llm=SemanticInterpreterConfig.from_sources(
                 base_url=app_config.llm_base_url,
                 api_key=app_config.llm_api_key,
@@ -60,10 +61,10 @@ class LiveSpeechUnderstandingService:
         self.recognizer = FunAsrStreamingRecognizer(config.asr)
         self.emotion_classifier = EmotionClassifier(config.emotion)
         self.semantic_interpreter = SemanticInterpreter(config.llm)
+        self._sentence_accumulator = SentenceAccumulator()
         self._token_stream = ChineseTokenStream()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._last_text = ""
         self._last_text_at = 0.0
         self._sentence_text = ""
         self._sentence_closed = True
@@ -125,15 +126,22 @@ class LiveSpeechUnderstandingService:
     def _consume_asr_text(self, text: str) -> None:
         """把新增 ASR 文本切词后送入情绪分类。"""
         normalized = text.strip()
-        if not normalized or normalized == self._last_text:
+        if not normalized:
             return
 
-        self._last_text = normalized
+        previous_sentence = self._sentence_accumulator.text
+        current_sentence = self._sentence_accumulator.update(normalized)
+        if not current_sentence or current_sentence == previous_sentence:
+            return
+
         self._last_text_at = time.monotonic()
-        self._sentence_text = normalized
+        self._sentence_text = current_sentence
         self._sentence_closed = False
 
-        for token in self._token_stream.consume(normalized):
+        if self.config.debug_print_asr_text:
+            print(f"[ASR_FULL] {current_sentence}", flush=True)
+
+        for token in self._token_stream.consume(current_sentence):
             emotion = self.emotion_classifier.classify(token)
             print(
                 f"[Emotion] 词={token} 标签={emotion.label} 置信度={emotion.confidence:.2f} 来源={emotion.source}",
@@ -149,13 +157,14 @@ class LiveSpeechUnderstandingService:
         if elapsed_ms < self.config.pause_threshold_ms:
             return
 
-        sentence = self._sentence_text.strip()
+        sentence = self._sentence_accumulator.text.strip()
         self._sentence_closed = True
         self._token_stream.reset()
         self.recognizer.reset()
 
         if sentence:
-            semantic = self.semantic_interpreter.interpret(sentence)
+            # 自然句结束后必须把完整句子交给 LLM；这里强制绕过低频缓存，避免连续两句话共用旧语义。
+            semantic = self.semantic_interpreter.interpret(sentence, force=True)
             if semantic.error:
                 print(f"\n[LLM] 句子={sentence} 标签=neutral 错误={semantic.error}\n", flush=True)
             else:
@@ -168,10 +177,10 @@ class LiveSpeechUnderstandingService:
 
     def _reset_sentence_state(self) -> None:
         """重置自然句缓存。"""
-        self._last_text = ""
         self._last_text_at = 0.0
         self._sentence_text = ""
         self._sentence_closed = True
+        self._sentence_accumulator.reset()
         self._token_stream.reset()
 
 

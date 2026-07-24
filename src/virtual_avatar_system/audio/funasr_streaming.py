@@ -9,6 +9,7 @@ from typing import Any, Final
 
 from virtual_avatar_system.audio.text_stabilizer import TextStabilizer
 from virtual_avatar_system.audio.types import AsrResult, AudioChunk
+from virtual_avatar_system.utils.runtime_dependencies import ensure_ffmpeg_on_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class FunAsrStreamingRecognizer:
             return
 
         # FunASR 模型加载较重，延迟到运行期，避免 UI 启动和测试导入被拖慢。
+        ensure_ffmpeg_on_path()
         from funasr import AutoModel
 
         LOGGER.info("加载 FunASR 流式模型：%s", self.config.model)

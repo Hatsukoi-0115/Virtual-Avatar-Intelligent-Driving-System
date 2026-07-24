@@ -17,7 +17,8 @@ LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
 CONFIG_DIR: Final[Path] = PROJECT_ROOT / "configs"
 CONFIG_FILE: Final[Path] = CONFIG_DIR / "app_config.json"
-DEFAULT_MODEL_PATH: Final[Path] = PROJECT_ROOT / "models" / "haru_ja" / "runtime" / "haru.model3.json"
+DEFAULT_MODEL_PATH: Final[str] = "models/haru_ja/runtime/haru.model3.json"
+DEFAULT_EMOTION_MODEL_PATH: Final[str] = "models/hf_cache/Johnson8187__Chinese-Emotion-Small"
 
 
 @dataclass(slots=True)
@@ -48,10 +49,10 @@ class AppConfig:
     debug_print_asr_text: bool = False
 
     # ---- 情绪模型 ----
-    emotion_model_path: str = str(PROJECT_ROOT / "models" / "hf_cache" / "Johnson8187__Chinese-Emotion-Small")
+    emotion_model_path: str = DEFAULT_EMOTION_MODEL_PATH
 
     # ---- Live2D 模型路径 ----
-    model_path: str = str(DEFAULT_MODEL_PATH)
+    model_path: str = DEFAULT_MODEL_PATH
 
     # ---- LLM 配置 ----
     llm_base_url: str = ""
@@ -80,9 +81,15 @@ def load_config() -> AppConfig:
         with CONFIG_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
         config = AppConfig(**data)
-        if not config.model_path.strip() or not Path(config.model_path).exists():
-            config.model_path = str(DEFAULT_MODEL_PATH)
+        config.model_path = project_relative_path(config.model_path or DEFAULT_MODEL_PATH)
+        config.emotion_model_path = project_relative_path(config.emotion_model_path or DEFAULT_EMOTION_MODEL_PATH)
+
+        if not resolve_project_path(config.model_path).exists():
+            config.model_path = DEFAULT_MODEL_PATH
             LOGGER.warning("配置中的模型路径无效，已回退到默认值：%s", config.model_path)
+        if not resolve_project_path(config.emotion_model_path).exists():
+            config.emotion_model_path = DEFAULT_EMOTION_MODEL_PATH
+            LOGGER.warning("配置中的情绪模型路径无效，已回退到默认值：%s", config.emotion_model_path)
         LOGGER.info("已加载配置：%s", CONFIG_FILE)
         return config
     except (json.JSONDecodeError, TypeError) as exc:
@@ -93,6 +100,29 @@ def load_config() -> AppConfig:
 def save_config(config: AppConfig) -> None:
     """将当前配置持久化到文件。"""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    config.model_path = project_relative_path(config.model_path or DEFAULT_MODEL_PATH)
+    config.emotion_model_path = project_relative_path(config.emotion_model_path or DEFAULT_EMOTION_MODEL_PATH)
     with CONFIG_FILE.open("w", encoding="utf-8") as f:
         json.dump(asdict(config), f, indent=2, ensure_ascii=False)
     LOGGER.info("配置已保存：%s", CONFIG_FILE)
+
+
+def resolve_project_path(path_value: str | Path) -> Path:
+    """把配置中的项目相对路径解析为绝对路径。"""
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+def project_relative_path(path_value: str | Path) -> str:
+    """把路径转成相对于项目根目录的配置值。"""
+    path = Path(path_value)
+    if not path.is_absolute():
+        return path.as_posix()
+
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        # 不在项目根目录下的外部路径保留原值，避免误改用户自定义路径。
+        return str(path)
