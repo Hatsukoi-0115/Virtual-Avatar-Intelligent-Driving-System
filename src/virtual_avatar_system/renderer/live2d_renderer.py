@@ -26,8 +26,10 @@ from virtual_avatar_system.controller.avatar_controller import AvatarOutputState
 
 LOGGER = logging.getLogger(__name__)
 WINDOW_SIZE: tuple[int, int] = (1280, 720)
-TRANSPARENT_KEY_RGB: tuple[int, int, int] = (0, 255, 0)
-TRANSPARENT_CLEAR_RGBA: tuple[float, float, float, float] = (0.0, 1.0, 0.0, 1.0)
+# 色键用洋红色而非绿色：洋红在动漫角色模型中几乎不出现，
+# 抗锯齿混合后的边缘溢出肉眼不可见，有效消除绿边问题
+TRANSPARENT_KEY_RGB: tuple[int, int, int] = (255, 0, 255)
+TRANSPARENT_CLEAR_RGBA: tuple[float, float, float, float] = (1.0, 0.0, 1.0, 1.0)
 
 user32 = ctypes.windll.user32
 GWL_EXSTYLE = -20
