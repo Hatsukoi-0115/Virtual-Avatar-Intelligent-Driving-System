@@ -26,6 +26,7 @@ MODEL_JSON: Final[Path] = PROJECT_ROOT / "models" / "haru_ja" / "runtime" / "har
 WINDOW_SIZE: Final[tuple[int, int]] = (1280, 720)
 TRANSPARENT_KEY_RGB: Final[tuple[int, int, int]] = (0, 255, 0)
 TRANSPARENT_CLEAR_RGBA: Final[tuple[float, float, float, float]] = (0.0, 1.0, 0.0, 1.0)
+
 # 按序播放的 23 个动作：(分组名, 组内索引, 简要标签)
 ALL_MOTIONS: Final[list[tuple[str, int, str]]] = [
     # Idle 组 — 待机动作
