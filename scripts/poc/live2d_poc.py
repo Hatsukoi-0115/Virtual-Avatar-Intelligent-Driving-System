@@ -66,15 +66,35 @@ TOTAL_MOTIONS: Final[int] = len(ALL_MOTIONS)
 user32 = ctypes.windll.user32
 GWL_EXSTYLE: Final[int] = -20
 WS_EX_LAYERED: Final[int] = 0x00080000
-LWA_COLORKEY: Final[int] = 0x00000001
 SWP_NOSIZE: Final[int] = 0x0001
 SWP_NOZORDER: Final[int] = 0x0004
 SWP_NOACTIVATE: Final[int] = 0x0010
 
 
-def _rgb_colorref(red: int, green: int, blue: int) -> int:
-    """把 RGB 值转换成 Windows 颜色键需要的 COLORREF。"""
-    return red | (green << 8) | (blue << 16)
+# DWM 模糊背景常量
+DWM_BB_ENABLE: Final[int] = 0x00000001
+
+
+class _DwmBlurBehind(ctypes.Structure):
+    """DWM 模糊背景参数结构体。"""
+
+    _fields_ = [
+        ("dwFlags", wintypes.DWORD),
+        ("fEnable", wintypes.BOOL),
+        ("hRgnBlur", wintypes.HRGN),
+        ("fTransitionOnMaximized", wintypes.BOOL),
+    ]
+
+
+class _Margins(ctypes.Structure):
+    """窗口边距结构体，用于 DwmExtendFrameIntoClientArea。"""
+
+    _fields_ = [
+        ("cxLeftWidth", wintypes.INT),
+        ("cxRightWidth", wintypes.INT),
+        ("cyTopHeight", wintypes.INT),
+        ("cyBottomHeight", wintypes.INT),
+    ]
 
 
 def _get_window_handle() -> int:
@@ -103,12 +123,27 @@ def _get_cursor_position() -> tuple[int, int]:
 
 
 def _enable_transparent_window(hwnd: int) -> None:
-    """把窗口设置为分层窗口，并使用颜色键抠掉背景。"""
+    """使用 DWM 逐像素 alpha 实现真正的透明窗口，无色键溢边。"""
     ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
     user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED)
-    color_key = _rgb_colorref(*TRANSPARENT_KEY_RGB)
-    if not user32.SetLayeredWindowAttributes(hwnd, color_key, 0, LWA_COLORKEY):
-        raise ctypes.WinError()
+
+    # DwmEnableBlurBehindWindow 让 DWM 按 alpha 通道合成窗口
+    dwmapi = ctypes.windll.dwmapi
+    blur = _DwmBlurBehind()
+    blur.dwFlags = DWM_BB_ENABLE
+    blur.fEnable = True
+    blur.hRgnBlur = None
+    blur.fTransitionOnMaximized = False
+    result = dwmapi.DwmEnableBlurBehindWindow(hwnd, ctypes.byref(blur))
+    if result != 0:
+        LOGGER.warning("DWM 透明窗口设置失败（错误码 %s）", result)
+        return
+
+    # 将 DWM 帧扩展到整个客户区，确保逐像素 alpha 合成覆盖全窗口
+    margins = _Margins(-1, -1, -1, -1)
+    result2 = dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+    if result2 != 0:
+        LOGGER.warning("DwmExtendFrameIntoClientArea 失败（错误码 %s）", result2)
 
 
 def _move_window(hwnd: int, x: int, y: int) -> None:
@@ -183,6 +218,9 @@ def main() -> None:
 
     pygame.init()
     pygame.display.set_caption("Live2D POC - haru_ja")
+    # 请求带 alpha 通道的 OpenGL 像素格式，DWM 才能按逐像素 alpha 合成透明背景
+    pygame.display.gl_set_attribute(pygame.GL_ALPHA_SIZE, 8)
+    pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
     pygame.display.set_mode(WINDOW_SIZE, DOUBLEBUF | OPENGL | NOFRAME)
     pygame.mouse.set_visible(True)
 
@@ -191,6 +229,9 @@ def main() -> None:
 
     live2d.init()
     live2d.glInit()
+    # 开启 OpenGL alpha 混合，模型边缘与透明背景自然过渡，无色键溢边
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
     model = live2d.LAppModel()
     model.LoadModelJson(str(model_json))
