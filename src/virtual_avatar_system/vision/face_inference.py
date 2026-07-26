@@ -1,10 +1,6 @@
-"""MediaPipe 人脸特征推理模块。
+"""MediaPipe 人脸与身体推理模块。
 
-职责：
-- 消费 CameraFramePacket
-- 进行 MediaPipe Face Landmarker 推理
-- 输出 VisualFeaturePacket
-- 不负责采集和渲染
+负责消费摄像头帧，产出包含面部和身体姿态的 VisualFeaturePacket。
 """
 
 from __future__ import annotations
@@ -56,21 +52,16 @@ def _sharpen_eye(value: float) -> float:
 
 
 class FaceLandmarkInferencer:
-    """MediaPipe Face Landmarker 推理器。
-
-    在独立线程中运行，消费帧包，产出视觉特征包。
-    """
+    """人脸推理器，方案2：头部姿态带动身体姿态。"""
 
     def __init__(self) -> None:
         self._landmarker: face_landmarker.FaceLandmarker | None = None
         self._thread: threading.Thread | None = None
         self._running = False
 
-        # 输入帧队列，每项为 (bgr_bytes, width, height)
         self._input_queue: list[tuple[bytes, int, int]] = []
         self._input_condition = threading.Condition()
 
-        # 输出特征队列
         self._output_queue: list[VisualFeaturePacket] = []
         self._output_lock = threading.Lock()
         self._max_output_size = 16
@@ -97,16 +88,12 @@ class FaceLandmarkInferencer:
     def stop(self) -> None:
         """停止推理并释放模型。"""
         self._running = False
-
         with self._input_condition:
             self._input_condition.notify_all()
-
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
-
         if self._landmarker:
             self._landmarker.close()
-
         LOGGER.info("MediaPipe 推理器已释放")
 
     # ---- 输入 ----
@@ -132,7 +119,7 @@ class FaceLandmarkInferencer:
     # ---- 内部 ----
 
     def _ensure_model_asset(self) -> None:
-        """确保 MediaPipe 模型文件可用。"""
+        """确保模型文件可用。"""
         if MODEL_ASSET_PATH.exists():
             return
         MODEL_ASSET_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -145,12 +132,11 @@ class FaceLandmarkInferencer:
                 f.write(chunk)
 
     def _build_landmarker(self) -> None:
-        """构建 MediaPipe Face Landmarker 实例。"""
+        """构建 Face Landmarker 实例。"""
         options = face_landmarker.FaceLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=str(MODEL_ASSET_PATH)),
             running_mode=vision.RunningMode.VIDEO,
             num_faces=1,
-            # 适当降低阈值，提升半遮挡、侧脸、画面边缘等情况下的人脸保持能力。
             min_face_detection_confidence=0.3,
             min_face_presence_confidence=0.3,
             min_tracking_confidence=0.3,
@@ -178,7 +164,8 @@ class FaceLandmarkInferencer:
 
             image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             timestamp_ms = int((time.perf_counter() - self._start_time) * 1000)
-            results = self._landmarker.detect_for_video(image, timestamp_ms)
+            # 进行人脸检测
+            face_results = self._landmarker.detect_for_video(image, timestamp_ms)
             inference_ms = (time.perf_counter() - inference_start) * 1000
 
             # 构建特征包
@@ -188,8 +175,8 @@ class FaceLandmarkInferencer:
                 inference_ms=inference_ms,
             )
 
-            if results.face_landmarks:
-                landmarks = results.face_landmarks[0]
+            if face_results.face_landmarks:
+                landmarks = face_results.face_landmarks[0]
                 packet.face_detected = True
 
                 # 用脸部局部比例做归一化，减少分辨率变化带来的数值漂移
@@ -257,6 +244,12 @@ class FaceLandmarkInferencer:
                         / 20.0,
                     ),
                 )
+
+            # 方案2：头部姿态带动身体姿态
+            packet.body_detected = True
+            packet.body_yaw = packet.head_yaw * 0.5
+            packet.body_pitch = packet.head_pitch * 0.5
+            packet.body_roll = packet.head_roll * 0.5
 
             # 写入输出队列
             with self._output_lock:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import math
 import multiprocessing as mp
 import os
 import queue
@@ -165,6 +166,10 @@ def _apply_avatar_output(
     model.SetParameterValue("PARAM_ANGLE_X", output.param_angle_x)
     model.SetParameterValue("PARAM_ANGLE_Y", output.param_angle_y)
     model.SetParameterValue("PARAM_ANGLE_Z", output.param_angle_z)
+    # 身体姿态
+    model.SetParameterValue("PARAM_BODY_ANGLE_X", output.param_body_angle_x)
+    model.SetParameterValue("PARAM_BODY_ANGLE_Y", output.param_body_angle_y)
+    model.SetParameterValue("PARAM_BODY_ANGLE_Z", output.param_body_angle_z)
     model.SetParameterValue("PARAM_EYE_L_OPEN", output.param_eye_l_open)
     model.SetParameterValue("PARAM_EYE_R_OPEN", output.param_eye_r_open)
     model.SetParameterValue("PARAM_MOUTH_OPEN_Y", output.param_mouth_open_y)
@@ -237,8 +242,11 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
     last_motion: tuple[str, int] = ("", 0)
     motion_playing = False
     motion_start_time = 0.0
-    # 动作播放最小持续时间（秒），在此期间不允许播放新动作
     MOTION_MIN_DURATION = 2.0
+    # 方案3：呼吸待机动画
+    breath_phase = 0.0
+    BREATH_SPEED = 0.015
+    BREATH_AMPLITUDE = 1.0
 
     try:
         while running and not stop_event.is_set():
@@ -280,6 +288,12 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
             # 如果播放了新动作，记录开始时间
             if last_motion != ("", 0) and not motion_playing:
                 motion_start_time = current_time
+
+            # 方案3：呼吸待机动画，始终运行
+            breath_phase += BREATH_SPEED
+            if breath_phase > 2.0 * 3.14159:
+                breath_phase -= 2.0 * 3.14159
+            model.SetParameterValue("PARAM_BREATH", (math.sin(breath_phase) + 1.0) / 2.0 * BREATH_AMPLITUDE)
 
             # 先更新模型，再绘制当前帧。
             model.Update()

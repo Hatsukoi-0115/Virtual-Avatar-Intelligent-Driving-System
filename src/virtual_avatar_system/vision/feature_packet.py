@@ -41,6 +41,12 @@ class VisualFeaturePacket:
     # ---- 嘴部（0=闭合，值越大嘴张得越大） ----
     mouth_open: float = 0.0
 
+    # ---- 身体姿态（肩部关键点驱动，归一化值 -1 ~ 1） ----
+    body_yaw: float = 0.0
+    body_pitch: float = 0.0
+    body_roll: float = 0.0
+    body_detected: bool = False
+
     # ---- 统计信息 ----
     frame_index: int = 0
     """自启动以来的累计帧序号"""

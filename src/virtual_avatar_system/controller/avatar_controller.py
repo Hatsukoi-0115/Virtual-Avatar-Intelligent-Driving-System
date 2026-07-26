@@ -120,6 +120,12 @@ class AvatarOutputState:
     # ---- 嘴部 ----
     param_mouth_open_y: float = 0.0
 
+    # ---- 身体姿态 ----
+    param_body_angle_x: float = 0.0
+    param_body_angle_y: float = 0.0
+    param_body_angle_z: float = 0.0
+    body_detected: bool = False
+
     # ---- 表情 ----
     expression: str = "Normal"
 
@@ -168,7 +174,6 @@ class AvatarController:
         visual = self._input.visual
         if visual and visual.face_detected:
             # 头部姿态：归一化值 [-1, 1] 映射到 Live2D 角度
-            # 头部姿态：归一化值 [-1, 1] 映射到 Live2D 角度
             output.param_angle_x = max(-45.0, min(45.0, visual.head_yaw * 45.0))
             output.param_angle_y = max(-45.0, min(45.0, visual.head_pitch * 45.0))
             output.param_angle_z = max(-30.0, min(30.0, visual.head_roll * 30.0))
@@ -179,6 +184,13 @@ class AvatarController:
 
             # 嘴部：0=闭合, 1=张开
             output.param_mouth_open_y = max(0.0, min(1.0, visual.mouth_open))
+
+        # 身体姿态：方案2，头部带动身体
+        if visual:
+            output.body_detected = visual.body_detected
+            output.param_body_angle_x = max(-20.0, min(20.0, visual.body_yaw * 20.0))
+            output.param_body_angle_y = max(-20.0, min(20.0, visual.body_pitch * 20.0))
+            output.param_body_angle_z = max(-20.0, min(20.0, visual.body_roll * 20.0))
 
         # 表情指令（后续接入情绪/语义后在此处做优先级判断）
         output.expression = self._input.expression
