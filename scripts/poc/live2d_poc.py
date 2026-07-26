@@ -24,9 +24,10 @@ LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 MODEL_JSON: Final[Path] = PROJECT_ROOT / "models" / "haru_ja" / "runtime" / "haru.model3.json"
 WINDOW_SIZE: Final[tuple[int, int]] = (1280, 720)
-# 色键用洋红色而非绿色，消除模型边缘绿边
-TRANSPARENT_KEY_RGB: Final[tuple[int, int, int]] = (255, 0, 255)
-TRANSPARENT_CLEAR_RGBA: Final[tuple[float, float, float, float]] = (1.0, 0.0, 1.0, 1.0)
+# 色键用纯黑色：模型本身是亮色，黑色背景抗锯齿混合后边缘变暗，
+# 在大多数桌面环境下几乎不可见，不会产生彩色溢边
+TRANSPARENT_KEY_RGB: Final[tuple[int, int, int]] = (0, 0, 0)
+TRANSPARENT_CLEAR_RGBA: Final[tuple[float, float, float, float]] = (0.0, 0.0, 0.0, 1.0)
 # 按序播放的 23 个动作：(分组名, 组内索引, 简要标签)
 ALL_MOTIONS: Final[list[tuple[str, int, str]]] = [
     # Idle 组 — 待机动作
