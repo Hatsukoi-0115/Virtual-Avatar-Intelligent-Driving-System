@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QSpinBox,
-    QComboBox,
     QPushButton,
     QLabel,
     QLineEdit,
@@ -57,20 +56,6 @@ class SettingsPage(QWidget):
     def _setup_ui(self) -> None:
         """构建设置页布局。"""
         main_layout = QVBoxLayout(self)
-
-        # ---- 设备组 ----
-        device_group = QGroupBox("设备选择", self)
-        device_form = QFormLayout(device_group)
-
-        self._camera_combo = QComboBox(self)
-        self._camera_combo.addItems([f"摄像头 {i}" for i in range(4)])
-        device_form.addRow("摄像头：", self._camera_combo)
-
-        self._mic_combo = QComboBox(self)
-        self._mic_combo.addItems([f"麦克风 {i}" for i in range(4)])
-        device_form.addRow("麦克风：", self._mic_combo)
-
-        main_layout.addWidget(device_group)
 
         # ---- 摄像头参数组 ----
         camera_group = QGroupBox("摄像头参数", self)
@@ -117,8 +102,6 @@ class SettingsPage(QWidget):
 
     def _connect_signals(self) -> None:
         """将控件变更连接到保存逻辑。"""
-        self._camera_combo.currentIndexChanged.connect(self._on_setting_changed)
-        self._mic_combo.currentIndexChanged.connect(self._on_setting_changed)
         self._camera_width.valueChanged.connect(self._on_setting_changed)
         self._camera_height.valueChanged.connect(self._on_setting_changed)
         self._camera_fps.valueChanged.connect(self._on_setting_changed)
@@ -131,8 +114,6 @@ class SettingsPage(QWidget):
         """把 AppConfig 字段同步到 UI 控件。"""
         # 初始化时阻塞信号，避免控件值变更触发保存逻辑覆盖配置
         for widget in (
-            self._camera_combo,
-            self._mic_combo,
             self._camera_width,
             self._camera_height,
             self._camera_fps,
@@ -141,8 +122,6 @@ class SettingsPage(QWidget):
         ):
             widget.blockSignals(True)
 
-        self._camera_combo.setCurrentIndex(self._config.camera_index)
-        self._mic_combo.setCurrentIndex(self._config.microphone_index)
         self._camera_width.setValue(self._config.camera_width)
         self._camera_height.setValue(self._config.camera_height)
         self._camera_fps.setValue(self._config.camera_fps)
@@ -151,8 +130,6 @@ class SettingsPage(QWidget):
 
         # 填充完成后恢复信号
         for widget in (
-            self._camera_combo,
-            self._mic_combo,
             self._camera_width,
             self._camera_height,
             self._camera_fps,
@@ -163,15 +140,13 @@ class SettingsPage(QWidget):
 
     def _on_setting_changed(self) -> None:
         """控件值变更 -> 写入 AppConfig -> 通知外部。"""
-        self._config.camera_index = self._camera_combo.currentIndex()
-        self._config.microphone_index = self._mic_combo.currentIndex()
         self._config.camera_width = self._camera_width.value()
         self._config.camera_height = self._camera_height.value()
         self._config.camera_fps = self._camera_fps.value()
         self._config.preview_always_on_top = self._preview_always_on_top.isChecked()
         self._config.model_path = self._model_path_edit.text()
 
-        LOGGER.info("配置已更新：camera=%s mic=%s", self._config.camera_index, self._config.microphone_index)
+        LOGGER.info("配置已更新：camera=%dx%d@%dfps", self._config.camera_width, self._config.camera_height, self._config.camera_fps)
 
         for callback in self._on_config_changed_callbacks:
             try:
