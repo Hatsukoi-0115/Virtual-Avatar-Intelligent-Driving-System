@@ -34,6 +34,21 @@ MODEL_DOWNLOAD_URL: Final[str] = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
     "face_landmarker/float16/1/face_landmarker.task"
 )
+CALIBRATION_FRAMES: Final[int] = 30
+HEAD_SMOOTHING_ALPHA: Final[float] = 0.35
+EYE_CLOSE_SMOOTHING_ALPHA: Final[float] = 0.90
+EYE_OPEN_SMOOTHING_ALPHA: Final[float] = 0.70
+HEAD_DEADZONE: Final[float] = 0.025
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    """Clamp a numeric value into a fixed range."""
+    return max(minimum, min(maximum, value))
+
+
+def _apply_deadzone(value: float, threshold: float = HEAD_DEADZONE) -> float:
+    """Suppress tiny head movements around the calibrated neutral pose."""
+    return 0.0 if abs(value) < threshold else value
 
 
 class FaceLandmarkInferencer:
@@ -58,6 +73,17 @@ class FaceLandmarkInferencer:
 
         self._start_time = 0.0
         self._frame_index = 0
+        self._calibration_samples = 0
+        self._baseline_yaw = 0.0
+        self._baseline_pitch = 0.0
+        self._baseline_roll = 0.0
+        self._baseline_eye_left = 0.0
+        self._baseline_eye_right = 0.0
+        self._smoothed_head_yaw = 0.0
+        self._smoothed_head_pitch = 0.0
+        self._smoothed_head_roll = 0.0
+        self._smoothed_eye_left = 1.0
+        self._smoothed_eye_right = 1.0
 
     # ---- 生命周期 ----
 
@@ -71,9 +97,10 @@ class FaceLandmarkInferencer:
 
         self._running = True
         self._start_time = time.perf_counter()
+        self._reset_tracking_state()
         self._thread = threading.Thread(target=self._run_loop, name="face-inference", daemon=True)
         self._thread.start()
-        LOGGER.info("MediaPipe 推理器已启动")
+        LOGGER.info("MediaPipe 推理器已启动，正在进行视觉中立校准：请正对摄像头、自然睁眼并保持头部水平约 1 秒")
 
     def stop(self) -> None:
         """停止推理并释放模型。"""
@@ -90,7 +117,85 @@ class FaceLandmarkInferencer:
 
         LOGGER.info("MediaPipe 推理器已释放")
 
+    @property
+    def calibration_complete(self) -> bool:
+        """视觉中立校准是否已完成。"""
+        return self._calibration_samples >= CALIBRATION_FRAMES
+
     # ---- 输入 ----
+
+    def _reset_tracking_state(self) -> None:
+        """Reset per-run calibration and smoothing state."""
+        self._calibration_samples = 0
+        self._baseline_yaw = 0.0
+        self._baseline_pitch = 0.0
+        self._baseline_roll = 0.0
+        self._baseline_eye_left = 0.0
+        self._baseline_eye_right = 0.0
+        self._smoothed_head_yaw = 0.0
+        self._smoothed_head_pitch = 0.0
+        self._smoothed_head_roll = 0.0
+        self._smoothed_eye_left = 1.0
+        self._smoothed_eye_right = 1.0
+
+    def _update_calibration(
+        self,
+        raw_yaw: float,
+        raw_pitch: float,
+        raw_roll: float,
+        raw_eye_left: float,
+        raw_eye_right: float,
+    ) -> bool:
+        """Accumulate the first stable face frames as the neutral pose."""
+        if self._calibration_samples >= CALIBRATION_FRAMES:
+            return True
+
+        self._calibration_samples += 1
+        weight = 1.0 / self._calibration_samples
+        self._baseline_yaw += (raw_yaw - self._baseline_yaw) * weight
+        self._baseline_pitch += (raw_pitch - self._baseline_pitch) * weight
+        self._baseline_roll += (raw_roll - self._baseline_roll) * weight
+        self._baseline_eye_left += (raw_eye_left - self._baseline_eye_left) * weight
+        self._baseline_eye_right += (raw_eye_right - self._baseline_eye_right) * weight
+
+        if self._calibration_samples == CALIBRATION_FRAMES:
+            LOGGER.info(
+                "视觉中立校准完成：yaw=%.3f pitch=%.3f roll=%.3f eye_l=%.3f eye_r=%.3f",
+                self._baseline_yaw,
+                self._baseline_pitch,
+                self._baseline_roll,
+                self._baseline_eye_left,
+                self._baseline_eye_right,
+            )
+            return True
+        return False
+
+    @staticmethod
+    def _normalize_eye_open(raw_ratio: float, baseline_ratio: float) -> float:
+        """Map each user's normal open eye ratio close to 1.0."""
+        if baseline_ratio <= 1e-6:
+            normalized = raw_ratio * 3.6
+        else:
+            closed_ratio = baseline_ratio * 0.30
+            open_ratio = baseline_ratio * 0.82
+            normalized = (raw_ratio - closed_ratio) / max(open_ratio - closed_ratio, 1e-6)
+
+        normalized = _clamp(normalized, 0.0, 1.0)
+        if normalized >= 0.78:
+            return 1.0
+        if normalized <= 0.18:
+            return 0.0
+        return normalized
+
+    @staticmethod
+    def _smooth(previous: float, current: float, alpha: float) -> float:
+        """Single-pole smoothing to reduce jitter without adding much latency."""
+        return previous + (current - previous) * alpha
+
+    def _smooth_eye_open(self, previous: float, current: float) -> float:
+        """Blink quickly while keeping ordinary open-eye frames stable."""
+        alpha = EYE_CLOSE_SMOOTHING_ALPHA if current < previous else EYE_OPEN_SMOOTHING_ALPHA
+        return self._smooth(previous, current, alpha)
 
     def feed_frame(self, bgr_bytes: bytes, width: int, height: int) -> None:
         """向推理器投喂一帧 BGR 数据。"""
@@ -182,34 +287,62 @@ class FaceLandmarkInferencer:
                 mouth_gap = abs(landmarks[13].y - landmarks[14].y)
                 packet.mouth_open = min(1.0, max(0.0, mouth_gap / max(mouth_width, 1e-6) * 2.5))
 
-                # 左右眼开合：上下眼睑间距 / 眼宽
                 left_eye_gap = abs(landmarks[159].y - landmarks[145].y)
                 right_eye_gap = abs(landmarks[386].y - landmarks[374].y)
-                packet.eye_open_left = min(1.0, max(0.0, left_eye_gap / max(left_eye_width, 1e-6) * 2.2))
-                packet.eye_open_right = min(1.0, max(0.0, right_eye_gap / max(right_eye_width, 1e-6) * 2.2))
+                raw_eye_left = left_eye_gap / max(left_eye_width, 1e-6)
+                raw_eye_right = right_eye_gap / max(right_eye_width, 1e-6)
 
-                # 头部偏航/俯仰：鼻尖相对眼部中心的位置
                 nose = landmarks[1]
                 eye_center_x = ((landmarks[33].x + landmarks[133].x) + (landmarks[362].x + landmarks[263].x)) / 4.0
                 eye_center_y = ((landmarks[159].y + landmarks[145].y) + (landmarks[386].y + landmarks[374].y)) / 4.0
-                # 提高偏移灵敏度：在脸部只露出一部分时，也更容易把数值推到饱和区间。
-                packet.head_yaw = max(-1.0, min(1.0, (nose.x - eye_center_x) / 0.12))
-                packet.head_pitch = max(-1.0, min(1.0, (eye_center_y - nose.y) / 0.12))
-
-                # 头部滚转：双眼连线斜率 → 角度，再归一化到 [-1, 1]
-                packet.head_roll = max(
-                    -1.0,
-                    min(
-                        1.0,
-                        math.degrees(
-                            math.atan2(
-                                landmarks[263].y - landmarks[33].y,
-                                landmarks[263].x - landmarks[33].x,
-                            )
+                raw_yaw = (nose.x - eye_center_x) / 0.12
+                raw_pitch = (eye_center_y - nose.y) / 0.12
+                raw_roll = (
+                    math.degrees(
+                        math.atan2(
+                            landmarks[263].y - landmarks[33].y,
+                            landmarks[263].x - landmarks[33].x,
                         )
-                        / 20.0,
-                    ),
+                    )
+                    / 20.0
                 )
+
+                calibrated = self._update_calibration(
+                    raw_yaw,
+                    raw_pitch,
+                    raw_roll,
+                    raw_eye_left,
+                    raw_eye_right,
+                )
+
+                if calibrated:
+                    target_yaw = _apply_deadzone(_clamp((raw_yaw - self._baseline_yaw) * 1.15, -1.0, 1.0))
+                    target_pitch = _apply_deadzone(_clamp((raw_pitch - self._baseline_pitch) * 1.15, -1.0, 1.0))
+                    target_roll = _apply_deadzone(_clamp((raw_roll - self._baseline_roll) * 1.10, -1.0, 1.0))
+                    target_eye_left = self._normalize_eye_open(raw_eye_left, self._baseline_eye_left)
+                    target_eye_right = self._normalize_eye_open(raw_eye_right, self._baseline_eye_right)
+                else:
+                    target_yaw = 0.0
+                    target_pitch = 0.0
+                    target_roll = 0.0
+                    target_eye_left = 1.0
+                    target_eye_right = 1.0
+
+                self._smoothed_head_yaw = self._smooth(self._smoothed_head_yaw, target_yaw, HEAD_SMOOTHING_ALPHA)
+                self._smoothed_head_pitch = self._smooth(
+                    self._smoothed_head_pitch,
+                    target_pitch,
+                    HEAD_SMOOTHING_ALPHA,
+                )
+                self._smoothed_head_roll = self._smooth(self._smoothed_head_roll, target_roll, HEAD_SMOOTHING_ALPHA)
+                self._smoothed_eye_left = self._smooth_eye_open(self._smoothed_eye_left, target_eye_left)
+                self._smoothed_eye_right = self._smooth_eye_open(self._smoothed_eye_right, target_eye_right)
+
+                packet.head_yaw = _clamp(self._smoothed_head_yaw, -1.0, 1.0)
+                packet.head_pitch = _clamp(self._smoothed_head_pitch, -1.0, 1.0)
+                packet.head_roll = _clamp(self._smoothed_head_roll, -1.0, 1.0)
+                packet.eye_open_left = _clamp(self._smoothed_eye_left, 0.0, 1.0)
+                packet.eye_open_right = _clamp(self._smoothed_eye_right, 0.0, 1.0)
 
             # 写入输出队列
             with self._output_lock:

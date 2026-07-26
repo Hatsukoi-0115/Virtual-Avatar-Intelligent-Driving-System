@@ -11,11 +11,34 @@ from __future__ import annotations
 
 import enum
 import logging
+import time
 from dataclasses import dataclass, field
 
+from virtual_avatar_system.emotion.types import EmotionResult
 from virtual_avatar_system.vision.feature_packet import VisualFeaturePacket
 
 LOGGER = logging.getLogger(__name__)
+EMOTION_TO_EXPRESSION: dict[str, str] = {
+    "开心": "Smile",
+    "难过": "Sad",
+    "愤怒": "Angry",
+    "疑问": "Surprised",
+    "惊讶": "Surprised",
+    "平静": "Normal",
+}
+EMOTION_MIN_CONFIDENCE = 0.50
+EMOTION_EXPRESSION_SECONDS = 2.2
+EMOTION_SWITCH_COOLDOWN_SECONDS = 0.35
+HEAD_YAW_DEGREES = 60.0
+HEAD_PITCH_UP_DEGREES = 180.0
+HEAD_PITCH_DOWN_DEGREES = 60.0
+HEAD_ROLL_DEGREES = 30.0
+
+
+def _map_head_pitch(value: float) -> float:
+    """抬头方向稍微放大，低头保持克制，避免默认姿态看起来偏低。"""
+    degrees = HEAD_PITCH_UP_DEGREES if value > 0 else HEAD_PITCH_DOWN_DEGREES
+    return max(-HEAD_PITCH_DOWN_DEGREES, min(HEAD_PITCH_UP_DEGREES, value * degrees))
 
 
 class InputPriority(enum.IntEnum):
@@ -45,6 +68,10 @@ class AvatarInputState:
 
     expression_priority: InputPriority = InputPriority.LOW
     """表情指令的优先级"""
+
+    # ---- 情绪输入 ----
+    emotion: EmotionResult | None = None
+    """语音链路输出的最新情绪结果"""
 
     # ---- 设备状态 ----
     device_status: dict[str, str] = field(default_factory=dict)
@@ -89,6 +116,9 @@ class AvatarController:
 
     def __init__(self) -> None:
         self._input: AvatarInputState = AvatarInputState()
+        self._active_expression = "Normal"
+        self._expression_expires_at = 0.0
+        self._last_expression_switch_at = 0.0
 
     # ---- 输入 ----
 
@@ -115,9 +145,9 @@ class AvatarController:
         visual = self._input.visual
         if visual and visual.face_detected:
             # 头部姿态：归一化值 [-1, 1] 映射到 Live2D 角度
-            output.param_angle_x = max(-60.0, min(60.0, visual.head_yaw * 60.0))
-            output.param_angle_y = max(-60.0, min(60.0, visual.head_pitch * 60.0))
-            output.param_angle_z = max(-30.0, min(30.0, visual.head_roll * 30.0))
+            output.param_angle_x = max(-HEAD_YAW_DEGREES, min(HEAD_YAW_DEGREES, visual.head_yaw * HEAD_YAW_DEGREES))
+            output.param_angle_y = _map_head_pitch(visual.head_pitch)
+            output.param_angle_z = max(-HEAD_ROLL_DEGREES, min(HEAD_ROLL_DEGREES, visual.head_roll * HEAD_ROLL_DEGREES))
 
             # 眼部：0=闭合, 1=睁开
             output.param_eye_l_open = max(0.0, min(1.0, visual.eye_open_left))
@@ -126,7 +156,49 @@ class AvatarController:
             # 嘴部：0=闭合, 1=张开
             output.param_mouth_open_y = max(0.0, min(1.0, visual.mouth_open))
 
-        # 表情指令（后续接入情绪/语义后在此处做优先级判断）
-        output.expression = self._input.expression
+        self._resolve_expression()
+        output.expression = self._active_expression
 
         return output
+
+    def _resolve_expression(self) -> None:
+        """把情绪输入解析成稳定的 Live2D 表情。"""
+        now = time.monotonic()
+        emotion = self._input.emotion
+
+        if emotion is not None:
+            self._maybe_apply_emotion(emotion, now)
+
+        if self._active_expression != "Normal" and now >= self._expression_expires_at:
+            self._active_expression = "Normal"
+
+    def _maybe_apply_emotion(self, emotion: EmotionResult, now: float) -> None:
+        """按置信度和冷却时间应用情绪，避免每个词都切换表情。"""
+        expression = EMOTION_TO_EXPRESSION.get(emotion.label)
+        if expression is None:
+            return
+        if emotion.confidence < EMOTION_MIN_CONFIDENCE:
+            return
+
+        if expression == "Normal":
+            if self._active_expression == "Normal":
+                return
+            if now < self._expression_expires_at:
+                return
+
+        if (
+            expression != self._active_expression
+            and now - self._last_expression_switch_at < EMOTION_SWITCH_COOLDOWN_SECONDS
+        ):
+            return
+
+        self._active_expression = expression
+        self._expression_expires_at = now + EMOTION_EXPRESSION_SECONDS
+        self._last_expression_switch_at = now
+        LOGGER.info(
+            "Emotion expression applied: %s -> %s confidence=%.2f source=%s",
+            emotion.label,
+            expression,
+            emotion.confidence,
+            emotion.source,
+        )

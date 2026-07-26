@@ -107,20 +107,27 @@ def _load_expressions(model: live2d.LAppModel, model_json_path: Path) -> list[st
     return expression_ids
 
 
-def _apply_avatar_output(model: live2d.LAppModel, output: AvatarOutputState, last_expression: str) -> str:
-    """把控制层输出映射到 Live2D 参数。"""
+def _apply_expression(model: live2d.LAppModel, output: AvatarOutputState, last_expression: str) -> str:
+    """应用低频表情切换。"""
+    if output.expression and output.expression != last_expression:
+        model.SetExpression(output.expression)
+        LOGGER.info("Live2D expression applied: %s", output.expression)
+        last_expression = output.expression
+
+    return last_expression
+
+
+def _apply_tracking_parameters(model: live2d.LAppModel, output: AvatarOutputState) -> None:
+    """把视觉跟踪参数写到 Live2D。
+
+    这一步必须放在 model.Update() 之后，避免表情、动作或呼吸更新覆盖头部与眼睛输入。
+    """
     model.SetParameterValue("PARAM_ANGLE_X", output.param_angle_x)
     model.SetParameterValue("PARAM_ANGLE_Y", output.param_angle_y)
     model.SetParameterValue("PARAM_ANGLE_Z", output.param_angle_z)
     model.SetParameterValue("PARAM_EYE_L_OPEN", output.param_eye_l_open)
     model.SetParameterValue("PARAM_EYE_R_OPEN", output.param_eye_r_open)
     model.SetParameterValue("PARAM_MOUTH_OPEN_Y", output.param_mouth_open_y)
-
-    if output.expression and output.expression != last_expression:
-        model.SetExpression(output.expression)
-        last_expression = output.expression
-
-    return last_expression
 
 
 def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutputState], stop_event: mp.Event) -> None:
@@ -192,10 +199,10 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
                     delta_y = cursor_y - drag_cursor_origin[1]
                     _move_window(hwnd, drag_window_origin[0] + delta_x, drag_window_origin[1] + delta_y)
 
-            last_expression = _apply_avatar_output(model, latest_output, last_expression)
+            last_expression = _apply_expression(model, latest_output, last_expression)
 
-            # 先更新模型，再绘制当前帧。
             model.Update()
+            _apply_tracking_parameters(model, latest_output)
             live2d.clearBuffer(*TRANSPARENT_CLEAR_RGBA)
             model.Draw()
 

@@ -88,6 +88,18 @@ class MainWindow(QMainWindow):
         """注入系统托盘实例。"""
         self._system_tray = tray
 
+    def show_runtime_notice(self, message: str, timeout_ms: int = 0) -> None:
+        """在主窗口展示运行时提示。"""
+        self._runtime_notice_label.setText(message)
+        self._runtime_notice_label.setVisible(bool(message))
+        if timeout_ms > 0:
+            QTimer.singleShot(timeout_ms, self.clear_runtime_notice)
+
+    def clear_runtime_notice(self) -> None:
+        """清空运行时提示。"""
+        self._runtime_notice_label.clear()
+        self._runtime_notice_label.setVisible(False)
+
     # ---- UI 构建 ----
 
     def _setup_window(self) -> None:
@@ -107,6 +119,17 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("状态：未准备", self)
         self._status_label.setStyleSheet("font-size: 14px; font-weight: bold;")
         main_layout.addWidget(self._status_label)
+
+        self._runtime_notice_label = QLabel("", self)
+        self._runtime_notice_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._runtime_notice_label.setWordWrap(True)
+        self._runtime_notice_label.setVisible(False)
+        self._runtime_notice_label.setStyleSheet(
+            "background-color: #fff3cd; color: #7a4f00; border: 2px solid #f0b429; "
+            "border-radius: 6px; padding: 14px 16px; font-size: 17px; font-weight: bold;"
+        )
+        self._runtime_notice_label.setMinimumHeight(64)
+        main_layout.addWidget(self._runtime_notice_label)
 
         # ---- 设置页 ----
         self._settings_page = SettingsPage(self._config, self)

@@ -6,13 +6,14 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from typing import Callable
 
-from virtual_avatar_system.audio.chinese_segmenter import ChineseTokenStream
 from virtual_avatar_system.audio.funasr_streaming import FunAsrConfig, FunAsrStreamingRecognizer
 from virtual_avatar_system.audio.sentence_accumulator import SentenceAccumulator
 from virtual_avatar_system.audio.source import AudioStreamConfig, AudioStreamSource
 from virtual_avatar_system.config.app_config import AppConfig, resolve_project_path
-from virtual_avatar_system.emotion.classifier import EmotionClassifier, EmotionClassifierConfig
+from virtual_avatar_system.emotion.classifier import RULE_KEYWORDS, EmotionClassifier, EmotionClassifierConfig
+from virtual_avatar_system.emotion.types import EmotionResult
 from virtual_avatar_system.llm.semantic import SemanticInterpreter, SemanticInterpreterConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -28,6 +29,8 @@ class LiveSpeechServiceConfig:
     llm: SemanticInterpreterConfig
     # 调试重点：自然语句结束停顿阈值。调小会更快触发换行和 LLM，调大会等待更完整的句子。
     pause_threshold_ms: int = 1200
+    # 表情更快响应的停顿阈值，通常小于自然句结束阈值。
+    emotion_trigger_ms: int = 120
     debug_print_asr_text: bool = False
 
     @classmethod
@@ -48,6 +51,7 @@ class LiveSpeechServiceConfig:
                 min_interval_ms=app_config.llm_min_interval_ms,
             ),
             pause_threshold_ms=app_config.speech_pause_threshold_ms,
+            emotion_trigger_ms=120,
             debug_print_asr_text=app_config.debug_print_asr_text,
         )
 
@@ -55,19 +59,24 @@ class LiveSpeechServiceConfig:
 class LiveSpeechUnderstandingService:
     """在后台线程中运行麦克风、FunASR、情绪分类和 LLM 语义理解。"""
 
-    def __init__(self, config: LiveSpeechServiceConfig) -> None:
+    def __init__(
+        self,
+        config: LiveSpeechServiceConfig,
+        on_emotion: Callable[[EmotionResult], None] | None = None,
+    ) -> None:
         self.config = config
+        self._on_emotion = on_emotion
         self.audio_source = AudioStreamSource(config.audio)
         self.recognizer = FunAsrStreamingRecognizer(config.asr)
         self.emotion_classifier = EmotionClassifier(config.emotion)
         self.semantic_interpreter = SemanticInterpreter(config.llm)
         self._sentence_accumulator = SentenceAccumulator()
-        self._token_stream = ChineseTokenStream()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_text_at = 0.0
         self._sentence_text = ""
         self._sentence_closed = True
+        self._emotion_sent_for_sentence = False
 
     @property
     def running(self) -> bool:
@@ -101,6 +110,7 @@ class LiveSpeechUnderstandingService:
         """持续读取音频块并输出情绪与语义结果。"""
         try:
             self.recognizer.load()
+            self._warmup_emotion_classifier()
             while not self._stop_event.is_set():
                 chunk = self.audio_source.pull(timeout=0.2)
                 if chunk is None:
@@ -123,6 +133,15 @@ class LiveSpeechUnderstandingService:
         finally:
             self.audio_source.stop()
 
+    def _warmup_emotion_classifier(self) -> None:
+        """预热情绪模型，避免第一次真实语音触发时才加载模型导致延迟。"""
+        started_at = time.monotonic()
+        try:
+            self.emotion_classifier.classify("你好")
+            LOGGER.info("情绪模型预热完成：%.0fms", (time.monotonic() - started_at) * 1000)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("情绪模型预热失败，后续将按需加载：%s", exc)
+
     def _consume_asr_text(self, text: str) -> None:
         """把新增 ASR 文本切词后送入情绪分类。"""
         normalized = text.strip()
@@ -141,12 +160,8 @@ class LiveSpeechUnderstandingService:
         if self.config.debug_print_asr_text:
             print(f"[ASR_FULL] {current_sentence}", flush=True)
 
-        for token in self._token_stream.consume(current_sentence):
-            emotion = self.emotion_classifier.classify(token)
-            print(
-                f"[Emotion] 词={token} 标签={emotion.label} 置信度={emotion.confidence:.2f} 来源={emotion.source}",
-                flush=True,
-            )
+        self._maybe_emit_fast_rule_emotion(current_sentence)
+        self._maybe_emit_emotion(current_sentence)
 
     def _check_sentence_pause(self) -> None:
         """检测自然语句停顿，达到阈值后触发 LLM 并换行。"""
@@ -154,15 +169,23 @@ class LiveSpeechUnderstandingService:
             return
 
         elapsed_ms = (time.monotonic() - self._last_text_at) * 1000
+        self._maybe_emit_emotion(self._sentence_accumulator.text.strip(), elapsed_ms=elapsed_ms)
         if elapsed_ms < self.config.pause_threshold_ms:
             return
 
         sentence = self._sentence_accumulator.text.strip()
         self._sentence_closed = True
-        self._token_stream.reset()
         self.recognizer.reset()
 
         if sentence:
+            emotion = self.emotion_classifier.classify(sentence)
+            if self._on_emotion is not None:
+                self._on_emotion(emotion)
+            print(
+                f"[Emotion] 句子={sentence} 标签={emotion.label} 置信度={emotion.confidence:.2f} 来源={emotion.source}",
+                flush=True,
+            )
+
             # 自然句结束后必须把完整句子交给 LLM；这里强制绕过低频缓存，避免连续两句话共用旧语义。
             semantic = self.semantic_interpreter.interpret(sentence, force=True)
             if semantic.error:
@@ -175,13 +198,57 @@ class LiveSpeechUnderstandingService:
                 )
         self._reset_sentence_state()
 
+    def _maybe_emit_emotion(self, sentence: str, elapsed_ms: float | None = None) -> None:
+        """在较短停顿时尽快输出情绪，避免表情等到整句结束才出现。"""
+        if self._emotion_sent_for_sentence or not sentence:
+            return
+
+        if elapsed_ms is None:
+            elapsed_ms = (time.monotonic() - self._last_text_at) * 1000 if self._last_text_at > 0 else 0.0
+        if elapsed_ms < self.config.emotion_trigger_ms:
+            return
+
+        emotion = self.emotion_classifier.classify(sentence)
+        self._emotion_sent_for_sentence = True
+        if self._on_emotion is not None:
+            self._on_emotion(emotion)
+        print(
+            f"[Emotion] 句子={sentence} 标签={emotion.label} 置信度={emotion.confidence:.2f} 来源={emotion.source}",
+            flush=True,
+        )
+
+    def _maybe_emit_fast_rule_emotion(self, sentence: str) -> None:
+        """明显情绪词直接触发表情，不等待较慢的 HF 模型推理。"""
+        if self._emotion_sent_for_sentence or not sentence:
+            return
+
+        for label, keywords in RULE_KEYWORDS.items():
+            if not any(keyword in sentence for keyword in keywords):
+                continue
+
+            emotion = EmotionResult(
+                label=label,
+                confidence=0.70,
+                source="fast-rule",
+                timestamp=time.time(),
+                metadata={"sentence": sentence},
+            )
+            self._emotion_sent_for_sentence = True
+            if self._on_emotion is not None:
+                self._on_emotion(emotion)
+            print(
+                f"[EmotionFast] 句子={sentence} 标签={emotion.label} 置信度={emotion.confidence:.2f} 来源={emotion.source}",
+                flush=True,
+            )
+            return
+
     def _reset_sentence_state(self) -> None:
         """重置自然句缓存。"""
         self._last_text_at = 0.0
         self._sentence_text = ""
         self._sentence_closed = True
         self._sentence_accumulator.reset()
-        self._token_stream.reset()
+        self._emotion_sent_for_sentence = False
 
 
 def main() -> None:

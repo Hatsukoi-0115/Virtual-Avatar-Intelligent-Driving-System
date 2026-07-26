@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import signal
 import sys
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -40,6 +41,7 @@ from virtual_avatar_system.ui.system_tray import AppSystemTray
 from virtual_avatar_system.renderer.live2d_renderer import Live2DRenderer
 from virtual_avatar_system.vision.camera_source import CameraFrameSource
 from virtual_avatar_system.vision.face_inference import FaceLandmarkInferencer
+from virtual_avatar_system.emotion.types import EmotionResult
 
 
 def _configure_logging() -> None:
@@ -82,6 +84,12 @@ def main() -> None:
     # ---- 融合层与渲染层 ----
     avatar_controller = AvatarController()
     live2d_renderer = Live2DRenderer()
+    latest_visual = None
+    latest_emotion: EmotionResult | None = None
+    latest_emotion_lock = threading.Lock()
+    neutral_calibration_notified = False
+    calibration_countdown_timer = QTimer()
+    calibration_countdown_remaining = 0
 
     # ---- 视觉链路：摄像头采集 + MediaPipe 推理 ----
     camera_source = CameraFrameSource(
@@ -111,15 +119,36 @@ def main() -> None:
     consume_timer = QTimer()
     consume_timer.setInterval(33)
 
+    def _on_emotion_detected(emotion: EmotionResult) -> None:
+        """接收 C 链路情绪结果，供主线程融合到 Avatar Controller。"""
+        nonlocal latest_emotion
+        with latest_emotion_lock:
+            latest_emotion = emotion
+        logger.info(
+            "Emotion queued for avatar: %s confidence=%.2f source=%s",
+            emotion.label,
+            emotion.confidence,
+            emotion.source,
+        )
+
     def _consume_features() -> None:
+        nonlocal latest_emotion, latest_visual, neutral_calibration_notified
         packets = inferencer.pop_features()
-        if not packets:
+        if packets:
+            latest_visual = packets[-1]
+        if inferencer.calibration_complete and not neutral_calibration_notified:
+            neutral_calibration_notified = True
+            main_window.show_runtime_notice("视觉中立校准完成，可以开始测试头部、眼睛和表情。", timeout_ms=3000)
+        with latest_emotion_lock:
+            emotion = latest_emotion
+            latest_emotion = None
+        if latest_visual is None and emotion is None:
             return
-        latest = packets[-1]
         avatar_controller.ingest(
             AvatarInputState(
-                visual=latest,
-                timestamp=latest.timestamp,
+                visual=latest_visual,
+                emotion=emotion,
+                timestamp=latest_visual.timestamp if latest_visual is not None else 0.0,
             )
         )
         avatar_output = avatar_controller.resolve()
@@ -131,6 +160,7 @@ def main() -> None:
 
     def _shutdown_runtime() -> None:
         """停止视觉采集、推理和渲染链路。"""
+        calibration_countdown_timer.stop()
         feed_timer.stop()
         consume_timer.stop()
         inferencer.stop()
@@ -158,10 +188,25 @@ def main() -> None:
         - 中文分词后的情绪分类
         - 自然句结束后的 LLM 标签匹配
         """
-        nonlocal speech_service
+        nonlocal speech_service, neutral_calibration_notified, calibration_countdown_remaining
         logger.info("开始直播：启动视觉、渲染、语音/情绪/LLM 链路")
         try:
+            neutral_calibration_notified = False
             live2d_renderer.start(resolve_project_path(config.model_path))
+            calibration_countdown_remaining = 3
+            main_window.show_runtime_notice("准备进行视觉校准：请正对摄像头、自然睁眼、头部保持水平。3 秒后开始。")
+            calibration_countdown_timer.start(1000)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("启动直播链路失败")
+            _shutdown_speech()
+            _shutdown_runtime()
+            main_window.state_machine.on_error(str(exc))
+
+    def _start_calibration_runtime() -> None:
+        """倒计时结束后启动视觉校准和语音链路。"""
+        nonlocal speech_service
+        try:
+            main_window.show_runtime_notice("正在进行视觉中立校准：请保持正对摄像头、自然睁眼，约 1 秒。")
             camera_source.start()
             inferencer.start()
             feed_timer.start()
@@ -169,7 +214,8 @@ def main() -> None:
 
             if speech_service is None:
                 speech_service = LiveSpeechUnderstandingService(
-                    LiveSpeechServiceConfig.from_app_config(main_window.config)
+                    LiveSpeechServiceConfig.from_app_config(main_window.config),
+                    on_emotion=_on_emotion_detected,
                 )
             speech_service.start()
             main_window.state_machine.on_ready()
@@ -178,6 +224,21 @@ def main() -> None:
             _shutdown_speech()
             _shutdown_runtime()
             main_window.state_machine.on_error(str(exc))
+
+    def _tick_calibration_countdown() -> None:
+        """更新视觉校准前的准备倒计时。"""
+        nonlocal calibration_countdown_remaining
+        calibration_countdown_remaining -= 1
+        if calibration_countdown_remaining > 0:
+            main_window.show_runtime_notice(
+                f"准备进行视觉校准：请正对摄像头、自然睁眼、头部保持水平。{calibration_countdown_remaining} 秒后开始。"
+            )
+            return
+
+        calibration_countdown_timer.stop()
+        _start_calibration_runtime()
+
+    calibration_countdown_timer.timeout.connect(_tick_calibration_countdown)
 
     def on_stop() -> None:
         """停止直播时的回调。
@@ -192,6 +253,7 @@ def main() -> None:
         logger.info("停止直播：释放视觉、渲染、语音/情绪/LLM 链路")
         _shutdown_speech()
         _shutdown_runtime()
+        main_window.clear_runtime_notice()
         main_window.state_machine.on_stopped()
 
     main_window.on_start(on_start)
