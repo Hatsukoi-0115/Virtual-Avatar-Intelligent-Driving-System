@@ -148,6 +148,17 @@ class AvatarController:
 
     def __init__(self) -> None:
         self._input: AvatarInputState = AvatarInputState()
+        # 缓存最后一帧有效的面部/身体参数，面部丢失时保持不动
+        self._last_angle_x = 0.0
+        self._last_angle_y = 0.0
+        self._last_angle_z = 0.0
+        self._last_eye_l = 1.0
+        self._last_eye_r = 1.0
+        self._last_mouth = 0.0
+        self._last_body_x = 0.0
+        self._last_body_y = 0.0
+        self._last_body_z = 0.0
+        self._last_body_detected = False
 
     # ---- 输入 ----
 
@@ -174,23 +185,34 @@ class AvatarController:
         visual = self._input.visual
         if visual and visual.face_detected:
             # 头部姿态：归一化值 [-1, 1] 映射到 Live2D 角度
-            output.param_angle_x = max(-45.0, min(45.0, visual.head_yaw * 45.0))
-            output.param_angle_y = max(-45.0, min(45.0, visual.head_pitch * 45.0))
-            output.param_angle_z = max(-30.0, min(30.0, visual.head_roll * 30.0))
-
+            self._last_angle_x = max(-45.0, min(45.0, visual.head_yaw * 45.0))
+            self._last_angle_y = max(-45.0, min(45.0, visual.head_pitch * 45.0))
+            self._last_angle_z = max(-30.0, min(30.0, visual.head_roll * 30.0))
             # 眼部：0=闭合, 1=睁开
-            output.param_eye_l_open = max(0.0, min(1.0, visual.eye_open_left))
-            output.param_eye_r_open = max(0.0, min(1.0, visual.eye_open_right))
-
+            self._last_eye_l = max(0.0, min(1.0, visual.eye_open_left))
+            self._last_eye_r = max(0.0, min(1.0, visual.eye_open_right))
             # 嘴部：0=闭合, 1=张开
-            output.param_mouth_open_y = max(0.0, min(1.0, visual.mouth_open))
+            self._last_mouth = max(0.0, min(1.0, visual.mouth_open))
 
-        # 身体姿态：方案2，头部带动身体
+        # 始终输出缓存的头部/眼部/嘴部参数（面部丢失时保持最后一帧位置）
+        output.param_angle_x = self._last_angle_x
+        output.param_angle_y = self._last_angle_y
+        output.param_angle_z = self._last_angle_z
+        output.param_eye_l_open = self._last_eye_l
+        output.param_eye_r_open = self._last_eye_r
+        output.param_mouth_open_y = self._last_mouth
+
+        # 身体姿态：方案2，头部带动身体，同样缓存最后一帧
         if visual:
-            output.body_detected = visual.body_detected
-            output.param_body_angle_x = max(-20.0, min(20.0, visual.body_yaw * 20.0))
-            output.param_body_angle_y = max(-20.0, min(20.0, visual.body_pitch * 20.0))
-            output.param_body_angle_z = max(-20.0, min(20.0, visual.body_roll * 20.0))
+            self._last_body_x = max(-20.0, min(20.0, visual.body_yaw * 20.0))
+            self._last_body_y = max(-20.0, min(20.0, visual.body_pitch * 20.0))
+            self._last_body_z = max(-20.0, min(20.0, visual.body_roll * 20.0))
+            self._last_body_detected = visual.body_detected
+
+        output.param_body_angle_x = self._last_body_x
+        output.param_body_angle_y = self._last_body_y
+        output.param_body_angle_z = self._last_body_z
+        output.body_detected = self._last_body_detected
 
         # 表情指令（后续接入情绪/语义后在此处做优先级判断）
         output.expression = self._input.expression

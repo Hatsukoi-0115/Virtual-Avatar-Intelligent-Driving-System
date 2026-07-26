@@ -187,7 +187,8 @@ class FaceLandmarkInferencer:
                 # 先计算头部偏航，用于后续眼睛透视补偿
                 nose = landmarks[1]
                 eye_center_x = ((landmarks[33].x + landmarks[133].x) + (landmarks[362].x + landmarks[263].x)) / 4.0
-                eye_center_y = ((landmarks[159].y + landmarks[145].y) + (landmarks[386].y + landmarks[374].y)) / 4.0
+                # 用眼角而非眼睑来算眼部Y中心，避免眨眼时Y坐标抖动导致头部晃动
+                eye_center_y = ((landmarks[33].y + landmarks[133].y) + (landmarks[362].y + landmarks[263].y)) / 4.0
                 face_width = max(abs(landmarks[263].x - landmarks[33].x), 1e-6)
                 raw_yaw = max(-1.0, min(1.0, (nose.x - eye_center_x) / (face_width * 0.5) * 1.5))
                 packet.head_yaw = raw_yaw

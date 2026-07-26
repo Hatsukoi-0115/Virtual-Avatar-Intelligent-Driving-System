@@ -11,8 +11,10 @@
 from __future__ import annotations
 
 import logging
+import random
 import signal
 import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -97,10 +99,12 @@ def main() -> None:
     def _on_semantic(label: str, confidence: float, summary: str) -> None:
         """LLM 语义理解回调：更新当前动作标签，下一帧渲染时生效。"""
         nonlocal latest_motion_label
+        # Idle 组三个待机动作不由 LLM 触发，仅用于面部丢失时随机选择
+        if label.startswith("idle_"):
+            return
         if label != latest_motion_label:
             logger.info("动作标签：%s（置信度 %.2f，摘要：%s）", label, confidence, summary)
             latest_motion_label = label
-            # 根据动作标签设置 AvatarController 的动作指令
             avatar_controller.set_motion_from_label(label)
 
     # ---- 视觉链路：摄像头采集 + MediaPipe 推理 ----
@@ -129,13 +133,27 @@ def main() -> None:
 
     # 桥接定时器：推理结果 → Avatar Controller → Live2D 渲染
     consume_timer = QTimer()
-    consume_timer.setInterval(33)
+    consume_timer.setInterval(16)
+    # 面部丢失触发 Idle 动作的冷却时间（秒）
+    _IDLE_COOLDOWN = 3.0
+    _last_idle_trigger_time = 0.0
+    _face_was_detected = False
+    _idle_labels = ("idle_calm", "idle_relaxed", "idle_curious")
 
     def _consume_features() -> None:
+        nonlocal latest_expression, _face_was_detected, _last_idle_trigger_time
         packets = inferencer.pop_features()
         if not packets:
             return
         latest = packets[-1]
+        # 面部丢失时触发随机 Idle 待机动作（冷却时间内不重复触发）
+        now = time.monotonic()
+        if _face_was_detected and not latest.face_detected and (now - _last_idle_trigger_time) >= _IDLE_COOLDOWN:
+            _last_idle_trigger_time = now
+            idle_label = random.choice(_idle_labels)
+            logger.info("面部丢失，触发随机 Idle 动作：%s", idle_label)
+            avatar_controller.set_motion_from_label(idle_label)
+        _face_was_detected = latest.face_detected
         # 更新视觉特征和表情，保留动作信息
         avatar_controller._input.visual = latest
         avatar_controller._input.expression = latest_expression
