@@ -142,8 +142,26 @@ def _load_expressions(model: live2d.LAppModel, model_json_path: Path) -> list[st
     return expression_ids
 
 
-def _apply_avatar_output(model: live2d.LAppModel, output: AvatarOutputState, last_expression: str) -> str:
-    """把控制层输出映射到 Live2D 参数。"""
+def _apply_avatar_output(
+    model: live2d.LAppModel,
+    output: AvatarOutputState,
+    last_expression: str,
+    last_motion: tuple[str, int],
+    motion_playing: bool,
+) -> tuple[str, tuple[str, int], bool]:
+    """把控制层输出映射到 Live2D 参数。
+
+    Args:
+        model: Live2D 模型实例
+        output: 控制层输出状态
+        last_expression: 上一次设置的表情
+        last_motion: 上一次设置的动作 (group, index)
+        motion_playing: 当前是否有动作正在播放
+
+    Returns:
+        (当前表情, 当前动作, 动作是否正在播放)
+    """
+    # 更新基础参数（头部姿态、眼部、嘴部）
     model.SetParameterValue("PARAM_ANGLE_X", output.param_angle_x)
     model.SetParameterValue("PARAM_ANGLE_Y", output.param_angle_y)
     model.SetParameterValue("PARAM_ANGLE_Z", output.param_angle_z)
@@ -151,11 +169,22 @@ def _apply_avatar_output(model: live2d.LAppModel, output: AvatarOutputState, las
     model.SetParameterValue("PARAM_EYE_R_OPEN", output.param_eye_r_open)
     model.SetParameterValue("PARAM_MOUTH_OPEN_Y", output.param_mouth_open_y)
 
+    # 表情：允许被新的表情打断
     if output.expression and output.expression != last_expression:
         model.SetExpression(output.expression)
         last_expression = output.expression
+        LOGGER.debug("播放表情：%s", output.expression)
 
-    return last_expression
+    # 动作：不允许被新的动作打断
+    # 只有在没有动作播放时，才播放新动作
+    current_motion = (output.motion_group, output.motion_index)
+    if output.motion_group and current_motion != last_motion and not motion_playing:
+        model.StartMotion(output.motion_group, output.motion_index, live2d.MotionPriority.FORCE)
+        last_motion = current_motion
+        motion_playing = True
+        LOGGER.info("播放动作：%s[%d]", output.motion_group, output.motion_index)
+
+    return last_expression, last_motion, motion_playing
 
 
 def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutputState], stop_event: mp.Event) -> None:
@@ -205,6 +234,11 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
     drag_cursor_origin = (0, 0)
     latest_output = AvatarOutputState()
     last_expression = ""
+    last_motion: tuple[str, int] = ("", 0)
+    motion_playing = False
+    motion_start_time = 0.0
+    # 动作播放最小持续时间（秒），在此期间不允许播放新动作
+    MOTION_MIN_DURATION = 2.0
 
     try:
         while running and not stop_event.is_set():
@@ -233,7 +267,19 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
                     delta_y = cursor_y - drag_cursor_origin[1]
                     _move_window(hwnd, drag_window_origin[0] + delta_x, drag_window_origin[1] + delta_y)
 
-            last_expression = _apply_avatar_output(model, latest_output, last_expression)
+            # 检测动作是否播放完成（基于时间）
+            current_time = pygame.time.get_ticks() / 1000.0
+            if motion_playing and (current_time - motion_start_time) >= MOTION_MIN_DURATION:
+                motion_playing = False
+                LOGGER.debug("动作播放完成")
+
+            last_expression, last_motion, motion_playing = _apply_avatar_output(
+                model, latest_output, last_expression, last_motion, motion_playing
+            )
+            
+            # 如果播放了新动作，记录开始时间
+            if last_motion != ("", 0) and not motion_playing:
+                motion_start_time = current_time
 
             # 先更新模型，再绘制当前帧。
             model.Update()

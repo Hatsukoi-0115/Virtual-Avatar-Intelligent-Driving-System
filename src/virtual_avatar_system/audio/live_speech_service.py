@@ -81,10 +81,16 @@ class LiveSpeechUnderstandingService:
         self._emotion_threshold = config.emotion_confidence_threshold
         # 情绪→表情回调，主线程注册后在此触发
         self._on_emotion: Callable[[str, float], None] | None = None
+        # LLM语义→动作回调，主线程注册后在此触发
+        self._on_semantic: Callable[[str, float, str], None] | None = None
 
     def on_emotion(self, callback: Callable[[str, float], None]) -> None:
         """注册情绪→表情回调，参数为 (表情ID, 置信度)。"""
         self._on_emotion = callback
+
+    def on_semantic(self, callback: Callable[[str, float, str], None]) -> None:
+        """注册LLM语义→动作回调，参数为 (动作标签, 置信度, 摘要)。"""
+        self._on_semantic = callback
 
     @property
     def running(self) -> bool:
@@ -191,6 +197,12 @@ class LiveSpeechUnderstandingService:
                     f"置信度={semantic.confidence:.2f} 摘要={semantic.summary}\n",
                     flush=True,
                 )
+                # 通过回调把 LLM 标签映射为 Live2D 动作，通知主线程
+                if self._on_semantic is not None:
+                    try:
+                        self._on_semantic(semantic.label, semantic.confidence, semantic.summary)
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.warning("LLM语义回调异常：%s", exc)
         self._reset_sentence_state()
 
     def _maybe_classify_emotion(self, sentence: str) -> None:

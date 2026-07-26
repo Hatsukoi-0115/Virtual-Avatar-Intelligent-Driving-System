@@ -84,6 +84,8 @@ def main() -> None:
     live2d_renderer = Live2DRenderer()
     # 当前情绪表情 ID，由语音链路回调更新，供视觉桥接定时器带入 AvatarInputState
     latest_expression = "Normal"
+    # 当前动作标签，由 LLM 语义回调更新
+    latest_motion_label = ""
 
     def _on_emotion(expression_id: str, confidence: float) -> None:
         """语音情绪分类回调：更新当前表情，下一帧渲染时生效。"""
@@ -91,6 +93,15 @@ def main() -> None:
         if expression_id != latest_expression:
             logger.info("表情切换：%s → %s（置信度 %.2f）", latest_expression, expression_id, confidence)
         latest_expression = expression_id
+
+    def _on_semantic(label: str, confidence: float, summary: str) -> None:
+        """LLM 语义理解回调：更新当前动作标签，下一帧渲染时生效。"""
+        nonlocal latest_motion_label
+        if label != latest_motion_label:
+            logger.info("动作标签：%s（置信度 %.2f，摘要：%s）", label, confidence, summary)
+            latest_motion_label = label
+            # 根据动作标签设置 AvatarController 的动作指令
+            avatar_controller.set_motion_from_label(label)
 
     # ---- 视觉链路：摄像头采集 + MediaPipe 推理 ----
     camera_source = CameraFrameSource(
@@ -125,13 +136,11 @@ def main() -> None:
         if not packets:
             return
         latest = packets[-1]
-        avatar_controller.ingest(
-            AvatarInputState(
-                visual=latest,
-                expression=latest_expression,
-                timestamp=latest.timestamp,
-            )
-        )
+        # 更新视觉特征和表情，保留动作信息
+        avatar_controller._input.visual = latest
+        avatar_controller._input.expression = latest_expression
+        avatar_controller._input.timestamp = latest.timestamp
+        
         avatar_output = avatar_controller.resolve()
         live2d_renderer.submit_state(avatar_output)
         # 视觉链路仍持续运行并驱动 Live2D；终端默认不输出视觉推理结果。
@@ -191,6 +200,7 @@ def main() -> None:
                     LiveSpeechServiceConfig.from_app_config(main_window.config)
                 )
                 speech_service.on_emotion(_on_emotion)
+                speech_service.on_semantic(_on_semantic)
             speech_service.start()
         except Exception as exc:  # noqa: BLE001
             logger.warning("语音/情绪/LLM 链路启动失败，仅保留视觉驱动：%s", exc)

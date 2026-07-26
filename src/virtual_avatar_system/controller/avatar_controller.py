@@ -18,6 +18,42 @@ from virtual_avatar_system.vision.feature_packet import VisualFeaturePacket
 LOGGER = logging.getLogger(__name__)
 
 
+# 动作标签到 Live2D 动作组的映射
+# 格式：{动作标签: (动作组名, 组内索引)}
+MOTION_LABEL_TO_GROUP: dict[str, tuple[str, int]] = {
+    # Idle 组 — 待机动作
+    "idle_calm": ("Idle", 0),
+    "idle_relaxed": ("Idle", 1),
+    "idle_curious": ("Idle", 2),
+    # Flick 组 — 轻弹方向
+    "flick_bounce": ("Flick", 0),
+    "flick_surprise": ("Flick", 1),
+    "flick_nod": ("Flick", 2),
+    # Tap 组 — 强调/互动
+    "tap_excited": ("Tap", 0),
+    "tap_think": ("Tap", 1),
+    "tap_agree": ("Tap", 2),
+    "tap_emphasize": ("Tap", 3),
+    "tap_cheerful": ("Tap", 4),
+    "tap_curious": ("Tap", 5),
+    # FlickRight 组 — 向右
+    "flick_right_glance": ("FlickRight", 0),
+    "flick_right_talk": ("FlickRight", 1),
+    "flick_right_reply": ("FlickRight", 2),
+    # Flick3 组 — 交替弹动
+    "flick3_double_bounce": ("Flick3", 0),
+    "flick3_greet": ("Flick3", 1),
+    "flick3_laugh": ("Flick3", 2),
+    # FlickLeft 组 — 向左
+    "flick_left_glance": ("FlickLeft", 0),
+    "flick_left_respond": ("FlickLeft", 1),
+    "flick_left_talk": ("FlickLeft", 2),
+    # Shake 组 — 摇晃
+    "shake_deny": ("Shake", 0),
+    "shake_surprise": ("Shake", 1),
+}
+
+
 class InputPriority(enum.IntEnum):
     """输入源优先级。
 
@@ -45,6 +81,16 @@ class AvatarInputState:
 
     expression_priority: InputPriority = InputPriority.LOW
     """表情指令的优先级"""
+
+    # ---- 动作指令 ----
+    motion_group: str = ""
+    """动作组名称（如 'Idle', 'Flick', 'Tap' 等）"""
+
+    motion_index: int = 0
+    """动作组内的索引"""
+
+    motion_priority: InputPriority = InputPriority.LOW
+    """动作指令的优先级"""
 
     # ---- 设备状态 ----
     device_status: dict[str, str] = field(default_factory=dict)
@@ -76,6 +122,13 @@ class AvatarOutputState:
 
     # ---- 表情 ----
     expression: str = "Normal"
+
+    # ---- 动作 ----
+    motion_group: str = ""
+    """动作组名称（如 'Idle', 'Flick', 'Tap' 等）"""
+
+    motion_index: int = 0
+    """动作组内的索引"""
 
 
 class AvatarController:
@@ -130,4 +183,24 @@ class AvatarController:
         # 表情指令（后续接入情绪/语义后在此处做优先级判断）
         output.expression = self._input.expression
 
+        # 动作指令
+        output.motion_group = self._input.motion_group
+        output.motion_index = self._input.motion_index
+
         return output
+
+    # ---- 辅助方法 ----
+
+    def set_motion_from_label(self, label: str) -> None:
+        """根据动作标签设置动作指令。
+
+        Args:
+            label: 动作标签（如 'idle_calm', 'flick_bounce' 等）
+        """
+        if label in MOTION_LABEL_TO_GROUP:
+            group, index = MOTION_LABEL_TO_GROUP[label]
+            self._input.motion_group = group
+            self._input.motion_index = index
+            LOGGER.debug("动作标签映射：%s -> (%s, %d)", label, group, index)
+        else:
+            LOGGER.warning("未知的动作标签：%s", label)
