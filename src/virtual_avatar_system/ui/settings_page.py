@@ -126,7 +126,7 @@ class SettingsPage(QWidget):
         self._camera_height.setValue(self._config.camera_height)
         self._camera_fps.setValue(self._config.camera_fps)
         self._preview_always_on_top.setChecked(self._config.preview_always_on_top)
-        self._model_path_edit.setText(self._config.model_path)
+        self._model_path_edit.setText(self._config.model_paths.get(self._config.model_name, ""))
 
         # 填充完成后恢复信号
         for widget in (
@@ -144,7 +144,7 @@ class SettingsPage(QWidget):
         self._config.camera_height = self._camera_height.value()
         self._config.camera_fps = self._camera_fps.value()
         self._config.preview_always_on_top = self._preview_always_on_top.isChecked()
-        self._config.model_path = self._model_path_edit.text()
+        self._config.model_paths[self._config.model_name] = self._model_path_edit.text()
 
         LOGGER.info("配置已更新：camera=%dx%d@%dfps", self._config.camera_width, self._config.camera_height, self._config.camera_fps)
 

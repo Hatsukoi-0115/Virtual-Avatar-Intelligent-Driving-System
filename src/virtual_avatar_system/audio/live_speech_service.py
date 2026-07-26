@@ -39,6 +39,8 @@ class LiveSpeechServiceConfig:
     debug_print_asr_text: bool = False
     # 情绪分类置信度阈值，低于此值的结果被舍弃，不输出
     emotion_confidence_threshold: float = _EMOTION_CONFIDENCE_THRESHOLD
+    # 模型名称，用于查找表情/动作映射配置
+    model_name: str = "haru_ja"
 
     @classmethod
     def from_app_config(cls, app_config: AppConfig) -> "LiveSpeechServiceConfig":
@@ -55,10 +57,13 @@ class LiveSpeechServiceConfig:
                 base_url=app_config.llm_base_url,
                 api_key=app_config.llm_api_key,
                 model=app_config.llm_model,
+                model_name=app_config.model_name,
                 min_interval_ms=app_config.llm_min_interval_ms,
             ),
             pause_threshold_ms=app_config.speech_pause_threshold_ms,
+            max_sentence_chars=getattr(app_config, "max_sentence_chars", 80),
             debug_print_asr_text=app_config.debug_print_asr_text,
+            model_name=app_config.model_name,
         )
 
 
@@ -267,7 +272,7 @@ class LiveSpeechUnderstandingService:
         self._last_emotion_at = time.monotonic()
 
         # 通过回调把情绪标签映射为 Live2D 表情 ID，通知主线程
-        expression_id = emotion_to_expression(emotion.label)
+        expression_id = emotion_to_expression(emotion.label, self.config.model_name)
         if self._on_emotion is not None:
             try:
                 self._on_emotion(expression_id, emotion.confidence)

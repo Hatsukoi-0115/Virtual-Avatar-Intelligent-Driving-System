@@ -14,44 +14,9 @@ import logging
 from dataclasses import dataclass, field
 
 from virtual_avatar_system.vision.feature_packet import VisualFeaturePacket
+from virtual_avatar_system.llm.semantic import get_motion_label_to_group
 
 LOGGER = logging.getLogger(__name__)
-
-
-# 动作标签到 Live2D 动作组的映射
-# 格式：{动作标签: (动作组名, 组内索引)}
-MOTION_LABEL_TO_GROUP: dict[str, tuple[str, int]] = {
-    # Idle 组 — 待机动作
-    "idle_calm": ("Idle", 0),
-    "idle_relaxed": ("Idle", 1),
-    "idle_curious": ("Idle", 2),
-    # Flick 组 — 轻弹方向
-    "flick_bounce": ("Flick", 0),
-    "flick_surprise": ("Flick", 1),
-    "flick_nod": ("Flick", 2),
-    # Tap 组 — 强调/互动
-    "tap_excited": ("Tap", 0),
-    "tap_think": ("Tap", 1),
-    "tap_agree": ("Tap", 2),
-    "tap_emphasize": ("Tap", 3),
-    "tap_cheerful": ("Tap", 4),
-    "tap_curious": ("Tap", 5),
-    # FlickRight 组 — 向右
-    "flick_right_glance": ("FlickRight", 0),
-    "flick_right_talk": ("FlickRight", 1),
-    "flick_right_reply": ("FlickRight", 2),
-    # Flick3 组 — 交替弹动
-    "flick3_double_bounce": ("Flick3", 0),
-    "flick3_greet": ("Flick3", 1),
-    "flick3_laugh": ("Flick3", 2),
-    # FlickLeft 组 — 向左
-    "flick_left_glance": ("FlickLeft", 0),
-    "flick_left_respond": ("FlickLeft", 1),
-    "flick_left_talk": ("FlickLeft", 2),
-    # Shake 组 — 摇晃
-    "shake_deny": ("Shake", 0),
-    "shake_surprise": ("Shake", 1),
-}
 
 
 class InputPriority(enum.IntEnum):
@@ -146,8 +111,11 @@ class AvatarController:
     - 生成最终输出状态
     """
 
-    def __init__(self) -> None:
+    def __init__(self, model_name: str = "haru_ja") -> None:
         self._input: AvatarInputState = AvatarInputState()
+        self._model_name = model_name
+        # 从配置加载当前模型的动作标签映射
+        self._motion_label_to_group = get_motion_label_to_group(model_name)
         # 缓存最后一帧有效的面部/身体参数，面部丢失时保持不动
         self._last_angle_x = 0.0
         self._last_angle_y = 0.0
@@ -226,15 +194,11 @@ class AvatarController:
     # ---- 辅助方法 ----
 
     def set_motion_from_label(self, label: str) -> None:
-        """根据动作标签设置动作指令。
-
-        Args:
-            label: 动作标签（如 'idle_calm', 'flick_bounce' 等）
-        """
-        if label in MOTION_LABEL_TO_GROUP:
-            group, index = MOTION_LABEL_TO_GROUP[label]
+        """根据动作标签设置动作指令。"""
+        if label in self._motion_label_to_group:
+            group, index = self._motion_label_to_group[label]
             self._input.motion_group = group
             self._input.motion_index = index
             LOGGER.debug("动作标签映射：%s -> (%s, %d)", label, group, index)
         else:
-            LOGGER.warning("未知的动作标签：%s", label)
+            LOGGER.warning("未知的动作标签：%s（模型 %s）", label, self._model_name)

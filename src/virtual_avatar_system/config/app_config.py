@@ -51,8 +51,9 @@ class AppConfig:
     # ---- 情绪模型 ----
     emotion_model_path: str = DEFAULT_EMOTION_MODEL_PATH
 
-    # ---- Live2D 模型路径 ----
-    model_path: str = DEFAULT_MODEL_PATH
+    # ---- Live2D 模型配置 ----
+    model_name: str = "haru_ja"
+    model_paths: dict[str, str] = field(default_factory=lambda: {"haru_ja": DEFAULT_MODEL_PATH})
 
     # ---- LLM 配置 ----
     llm_base_url: str = ""
@@ -80,13 +81,17 @@ def load_config() -> AppConfig:
     try:
         with CONFIG_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
+        # 兼容旧版单模型路径配置
+        if "model_path" in data and "model_paths" not in data:
+            data["model_paths"] = {"haru_ja": data.pop("model_path")}
+            data.setdefault("model_name", "haru_ja")
         config = AppConfig(**data)
-        config.model_path = project_relative_path(config.model_path or DEFAULT_MODEL_PATH)
         config.emotion_model_path = project_relative_path(config.emotion_model_path or DEFAULT_EMOTION_MODEL_PATH)
 
-        if not resolve_project_path(config.model_path).exists():
-            config.model_path = DEFAULT_MODEL_PATH
-            LOGGER.warning("配置中的模型路径无效，已回退到默认值：%s", config.model_path)
+        # 验证当前选中模型路径是否存在
+        current_model_path = get_model_path(config)
+        if current_model_path and not resolve_project_path(current_model_path).exists():
+            LOGGER.warning("模型路径无效：%s", current_model_path)
         if not resolve_project_path(config.emotion_model_path).exists():
             config.emotion_model_path = DEFAULT_EMOTION_MODEL_PATH
             LOGGER.warning("配置中的情绪模型路径无效，已回退到默认值：%s", config.emotion_model_path)
@@ -100,7 +105,6 @@ def load_config() -> AppConfig:
 def save_config(config: AppConfig) -> None:
     """将当前配置持久化到文件。"""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    config.model_path = project_relative_path(config.model_path or DEFAULT_MODEL_PATH)
     config.emotion_model_path = project_relative_path(config.emotion_model_path or DEFAULT_EMOTION_MODEL_PATH)
     with CONFIG_FILE.open("w", encoding="utf-8") as f:
         json.dump(asdict(config), f, indent=2, ensure_ascii=False)
@@ -113,6 +117,11 @@ def resolve_project_path(path_value: str | Path) -> Path:
     if path.is_absolute():
         return path
     return PROJECT_ROOT / path
+
+
+def get_model_path(config: AppConfig) -> str:
+    """根据 model_name 从 model_paths 字典中获取当前模型路径。"""
+    return config.model_paths.get(config.model_name, DEFAULT_MODEL_PATH)
 
 
 def project_relative_path(path_value: str | Path) -> str:
