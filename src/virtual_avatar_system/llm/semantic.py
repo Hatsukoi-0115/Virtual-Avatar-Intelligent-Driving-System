@@ -41,9 +41,9 @@ MOTION_LABELS: Final[tuple[str, ...]] = (
 )
 
 MOTION_DESCRIPTIONS: Final[tuple[str, ...]] = (
-    "待机（平静站立，微微呼吸）",
-    "待机（放松状态，轻微倾斜）",
-    "待机（略带好奇的左右观望）",
+    "待机",
+    "待机",
+    "待机",
     "点头、认同",
     "摇头、双臂交叉、否认",
     "单手托下巴、思考",
@@ -55,7 +55,7 @@ MOTION_DESCRIPTIONS: Final[tuple[str, ...]] = (
     "脸红、双臂交叉、害羞",
     "双臂交叉、恶作剧、窃喜",
     "身体一震、惊喜",
-    "待机（回复后的默认状态）",
+    "待机",
     "双手合十、点头、认同",
     "开心（打招呼式）",
     "开心（轻笑）",
@@ -71,7 +71,7 @@ MOTION_CANDIDATES: Final[str] = "\n".join(
     for label, description in zip(MOTION_LABELS, MOTION_DESCRIPTIONS, strict=True)
 )
 
-SYSTEM_PROMPT: Final[str] = f"""你是虚拟形象的低频语义理解器。根据一段自然语句，从候选动作标签中选择最匹配的一项。
+SYSTEM_PROMPT: Final[str] = f"""你是虚拟形象的低频语义理解器。根据一段自然语句，从候选动作标签中选择最匹配的一项，若均不匹配则选择第一个待机。
 
 候选标签：
 {MOTION_CANDIDATES}

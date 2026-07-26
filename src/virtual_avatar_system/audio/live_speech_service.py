@@ -34,6 +34,8 @@ class LiveSpeechServiceConfig:
     llm: SemanticInterpreterConfig
     # 调试重置点：自然语句结束停顿阈值。调小会更快触发换行和 LLM，调大会等待更完整的句子。
     pause_threshold_ms: int = 1200
+    # 单句最大字数：超过此长度自动结束句子，防止主播不停说话导致 LLM 一直不调用
+    max_sentence_chars: int = 80
     debug_print_asr_text: bool = False
     # 情绪分类置信度阈值，低于此值的结果被舍弃，不输出
     emotion_confidence_threshold: float = _EMOTION_CONFIDENCE_THRESHOLD
@@ -170,16 +172,29 @@ class LiveSpeechUnderstandingService:
         # 整句情绪分类（带去抖），不再逐词分类
         self._maybe_classify_emotion(current_sentence)
 
+        # 字数超限时立即触发句结束
+        if len(current_sentence) >= self.config.max_sentence_chars:
+            self._check_sentence_pause()
+
     def _check_sentence_pause(self) -> None:
-        """检测自然句停顿，达到阈值后触发最终情绪分类和 LLM。"""
+        """检测自然句停顿或字数超限，触发最终情绪分类和 LLM。"""
         if self._sentence_closed or not self._sentence_text or self._last_text_at <= 0:
             return
 
         elapsed_ms = (time.monotonic() - self._last_text_at) * 1000
-        if elapsed_ms < self.config.pause_threshold_ms:
+        sentence = self._sentence_accumulator.text.strip()
+
+        # 字数超限：立即结束句子
+        length_triggered = len(sentence) >= self.config.max_sentence_chars
+        # 停顿超时：自然句结束
+        pause_triggered = elapsed_ms >= self.config.pause_threshold_ms
+
+        if not (length_triggered or pause_triggered):
             return
 
-        sentence = self._sentence_accumulator.text.strip()
+        if length_triggered:
+            LOGGER.info("句子字数超限（%d/%d），强制结束", len(sentence), self.config.max_sentence_chars)
+
         self._sentence_closed = True
         self.recognizer.reset()
 

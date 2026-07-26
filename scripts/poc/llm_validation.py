@@ -57,9 +57,9 @@ MOTION_LABELS: Final[tuple[str, ...]] = (
 )
 
 MOTION_DESCRIPTIONS: Final[tuple[str, ...]] = (
-    "待机（平静站立，微微呼吸）",
-    "待机（放松状态，轻微倾斜）",
-    "待机（略带好奇的左右观望）",
+    "待机",
+    "待机",
+    "待机",
     "点头、认同",
     "摇头、双臂交叉、否认",
     "单手托下巴、思考",
@@ -71,7 +71,7 @@ MOTION_DESCRIPTIONS: Final[tuple[str, ...]] = (
     "脸红、双臂交叉、害羞",
     "双臂交叉、恶作剧、窃喜",
     "身体一震、惊喜",
-    "待机（回复后的默认状态）",
+    "待机",
     "双手合十、点头、认同",
     "开心（打招呼式）",
     "开心（轻笑）",
@@ -91,7 +91,7 @@ MOTION_LABEL_TO_DESCRIPTION: Final[dict[str, str]] = dict(
     zip(MOTION_LABELS, MOTION_DESCRIPTIONS, strict=True)
 )
 
-SYSTEM_PROMPT: Final[str] = f"""你是一个虚拟形象动作选择器。根据主播说的一句话，分析主播的状态符合哪一种描述，返回对应的标签。
+SYSTEM_PROMPT: Final[str] = f"""你是一个虚拟形象动作选择器。根据主播说的一句话，分析主播的状态符合哪一种描述（除了待机），返回对应的标签，若均不太符合则选择第一个待机。
 
 标签与对应的描述：
 {MOTION_CANDIDATES}
