@@ -10,9 +10,11 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Callable
 
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -23,7 +25,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
-    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -48,6 +49,7 @@ class MainWindow(QMainWindow):
         self._on_start_callbacks: list[Callable[[], None]] = []
         self._on_stop_callbacks: list[Callable[[], None]] = []
 
+        self._configure_ui_font()
         self._setup_window()
         self._setup_ui()
         self._connect_state_machine()
@@ -84,9 +86,34 @@ class MainWindow(QMainWindow):
     def _setup_window(self) -> None:
         """设置主窗口属性。"""
         self.setWindowTitle("虚拟形象智能驱动系统")
-        self.resize(680, 720)
-        self.setMinimumSize(620, 680)
+        self.resize(680, 660)
+        self.setMinimumSize(620, 620)
         self.setMaximumWidth(720)
+
+    def _configure_ui_font(self) -> None:
+        """主动加载中文字体，避免部分 Qt 环境回退到缺字形字体。"""
+        fonts_dir = Path("C:/Windows/Fonts")
+        font_files = (
+            fonts_dir / "NotoSansSC-VF.ttf",
+            fonts_dir / "msyh.ttc",
+            fonts_dir / "simhei.ttf",
+            fonts_dir / "simsun.ttc",
+        )
+        loaded_families: list[str] = []
+        for font_file in font_files:
+            if not font_file.exists():
+                continue
+            font_id = QFontDatabase.addApplicationFont(str(font_file))
+            if font_id >= 0:
+                loaded_families.extend(QFontDatabase.applicationFontFamilies(font_id))
+
+        app = QApplication.instance()
+        if app is not None and loaded_families:
+            preferred = next(
+                (family for family in ("Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "SimHei") if family in loaded_families),
+                loaded_families[0],
+            )
+            app.setFont(QFont(preferred, 9))
 
     def _setup_ui(self) -> None:
         """构建主窗口内容。"""
@@ -95,31 +122,32 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(26, 26, 26, 22)
-        main_layout.setSpacing(18)
+        main_layout.setContentsMargins(24, 24, 24, 20)
+        main_layout.setSpacing(16)
 
         main_layout.addWidget(self._build_header())
 
         self._settings_page = SettingsPage(self._config, self)
         self._settings_page.on_config_changed(self._on_config_changed)
+        self._settings_page.config_validity_changed.connect(self._on_config_validity_changed)
         main_layout.addWidget(self._settings_page, stretch=1)
 
         footer = QFrame(self)
         footer.setObjectName("footer")
         footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(0, 28, 0, 0)
+        footer_layout.setContentsMargins(0, 14, 0, 0)
         footer_layout.addStretch()
 
         self._action_button = QPushButton("▶  开始直播", self)
         self._action_button.setObjectName("primaryActionButton")
-        self._action_button.setMinimumSize(210, 52)
+        self._action_button.setMinimumSize(196, 46)
         self._action_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._action_button.clicked.connect(self._on_action_pressed)
 
         button_shadow = QGraphicsDropShadowEffect(self._action_button)
-        button_shadow.setBlurRadius(20)
-        button_shadow.setOffset(0, 5)
-        button_shadow.setColor(QColor(15, 79, 145, 90))
+        button_shadow.setBlurRadius(16)
+        button_shadow.setOffset(0, 4)
+        button_shadow.setColor(QColor(2, 132, 199, 64))
         self._action_button.setGraphicsEffect(button_shadow)
 
         footer_layout.addWidget(self._action_button)
@@ -137,31 +165,33 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        icon_label = QLabel(self)
-        icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
-        icon_label.setPixmap(icon.pixmap(28, 28))
-        layout.addWidget(icon_label)
+        brand_mark = QLabel("VA", self)
+        brand_mark.setObjectName("brandMark")
+        brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand_mark.setFixedSize(28, 28)
+        layout.addWidget(brand_mark)
 
         title_label = QLabel("虚拟形象智能驱动系统", self)
         title_label.setObjectName("titleLabel")
         layout.addWidget(title_label)
         layout.addStretch()
 
-        status_badge = QFrame(self)
-        status_badge.setObjectName("statusBadge")
-        status_layout = QHBoxLayout(status_badge)
+        self._status_badge = QFrame(self)
+        self._status_badge.setObjectName("statusBadge")
+        self._status_badge.setProperty("status", "idle")
+        status_layout = QHBoxLayout(self._status_badge)
         status_layout.setContentsMargins(14, 0, 16, 0)
-        status_layout.setSpacing(10)
+        status_layout.setSpacing(8)
 
         self._status_dot = QLabel(self)
         self._status_dot.setObjectName("statusDotIdle")
-        self._status_dot.setFixedSize(10, 10)
+        self._status_dot.setFixedSize(8, 8)
         status_layout.addWidget(self._status_dot)
 
         self._status_label = QLabel("未准备", self)
         self._status_label.setObjectName("statusText")
         status_layout.addWidget(self._status_label)
-        layout.addWidget(status_badge)
+        layout.addWidget(self._status_badge)
 
         return header
 
@@ -170,67 +200,101 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QWidget#root {
-                background: #eef2f6;
-                color: #111827;
-                font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
-                font-size: 14px;
+                background: #F8FAFC;
+                color: #0F172A;
+                font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+                font-size: 13px;
+            }
+            QLabel#brandMark {
+                background: #E0F2FE;
+                border: 1px solid #BAE6FD;
+                border-radius: 8px;
+                color: #0284C7;
+                font-size: 11px;
+                font-weight: 800;
             }
             QLabel#titleLabel {
-                color: #111827;
-                font-size: 22px;
-                font-weight: 800;
+                color: #0F172A;
+                font-size: 16px;
+                font-weight: 700;
             }
             QFrame#statusBadge {
-                background: #f8fafc;
-                border: 1px solid #d8dee8;
-                border-radius: 18px;
-                min-height: 36px;
+                background: #FEF2F2;
+                border: 1px solid #FECACA;
+                border-radius: 12px;
+                min-height: 28px;
+            }
+            QFrame#statusBadge[status="ready"],
+            QFrame#statusBadge[status="running"] {
+                background: #ECFDF5;
+                border: 1px solid #A7F3D0;
+            }
+            QFrame#statusBadge[status="preparing"],
+            QFrame#statusBadge[status="stopping"] {
+                background: #FFFBEB;
+                border: 1px solid #FDE68A;
+            }
+            QFrame#statusBadge[status="error"] {
+                background: #FEF2F2;
+                border: 1px solid #FCA5A5;
             }
             QLabel#statusText {
-                color: #374151;
-                font-size: 14px;
+                color: #EF4444;
+                font-size: 13px;
                 font-weight: 600;
             }
+            QFrame#statusBadge[status="ready"] QLabel#statusText,
+            QFrame#statusBadge[status="running"] QLabel#statusText {
+                color: #10B981;
+            }
+            QFrame#statusBadge[status="preparing"] QLabel#statusText,
+            QFrame#statusBadge[status="stopping"] QLabel#statusText {
+                color: #D97706;
+            }
             QLabel#statusDotIdle {
-                background: #ef4444;
-                border-radius: 5px;
+                background: #EF4444;
+                border-radius: 4px;
+            }
+            QLabel#statusDotReady {
+                background: #10B981;
+                border-radius: 4px;
             }
             QLabel#statusDotPreparing {
-                background: #d19a1f;
-                border-radius: 5px;
+                background: #D97706;
+                border-radius: 4px;
             }
             QLabel#statusDotRunning {
-                background: #16a34a;
-                border-radius: 5px;
+                background: #10B981;
+                border-radius: 4px;
             }
             QLabel#statusDotError {
-                background: #b91c1c;
-                border-radius: 5px;
+                background: #EF4444;
+                border-radius: 4px;
             }
             QPushButton#primaryActionButton {
-                background: #0f4f91;
+                background: #0284C7;
                 border: 0;
-                border-radius: 10px;
+                border-radius: 8px;
                 color: white;
-                font-size: 18px;
-                font-weight: 800;
-                padding: 0 28px;
+                font-size: 15px;
+                font-weight: 700;
+                padding: 0 24px;
             }
             QPushButton#primaryActionButton:hover {
-                background: #0b437d;
+                background: #0369A1;
             }
             QPushButton#primaryActionButton:pressed {
-                background: #083766;
+                background: #075985;
             }
             QPushButton#primaryActionButton:disabled {
-                background: #c7d2e0;
+                background: #E2E8F0;
                 color: #64748b;
             }
             QPushButton#primaryActionButton[mode="stop"] {
-                background: #dc2626;
+                background: #DC2626;
             }
             QPushButton#primaryActionButton[mode="stop"]:hover {
-                background: #b91c1c;
+                background: #B91C1C;
             }
             """
         )
@@ -243,22 +307,33 @@ class MainWindow(QMainWindow):
 
     def _on_state_changed(self, old: LiveState, new: LiveState) -> None:
         """状态变更时更新顶部徽章和主按钮。"""
+        is_config_valid = self._settings_page.is_config_valid()
         state_text_map = {
-            LiveState.IDLE: "未准备",
+            LiveState.IDLE: "已就绪" if is_config_valid else "未准备",
             LiveState.PREPARING: "准备中",
             LiveState.RUNNING: "运行中",
             LiveState.STOPPING: "停止中",
             LiveState.ERROR: f"错误：{self._state_machine.error_message}",
         }
         dot_style_map = {
-            LiveState.IDLE: "statusDotIdle",
+            LiveState.IDLE: "statusDotReady" if is_config_valid else "statusDotIdle",
             LiveState.PREPARING: "statusDotPreparing",
             LiveState.RUNNING: "statusDotRunning",
             LiveState.STOPPING: "statusDotPreparing",
             LiveState.ERROR: "statusDotError",
         }
+        badge_status_map = {
+            LiveState.IDLE: "ready" if is_config_valid else "idle",
+            LiveState.PREPARING: "preparing",
+            LiveState.RUNNING: "running",
+            LiveState.STOPPING: "stopping",
+            LiveState.ERROR: "error",
+        }
         self._status_label.setText(state_text_map.get(new, "未知"))
+        self._status_badge.setProperty("status", badge_status_map.get(new, "idle"))
         self._status_dot.setObjectName(dot_style_map.get(new, "statusDotIdle"))
+        self._status_badge.style().unpolish(self._status_badge)
+        self._status_badge.style().polish(self._status_badge)
         self._status_dot.style().unpolish(self._status_dot)
         self._status_dot.style().polish(self._status_dot)
 
@@ -271,7 +346,10 @@ class MainWindow(QMainWindow):
         elif new == LiveState.ERROR:
             self._set_action_button("▶  重试启动", True, "start")
         else:
-            self._set_action_button("▶  开始直播", self._state_machine.can_start, "start")
+            if is_config_valid:
+                self._set_action_button("▶  开始直播", self._state_machine.can_start, "start")
+            else:
+                self._set_action_button("请先配置参数", False, "start")
 
         if new == LiveState.ERROR:
             QMessageBox.critical(
@@ -298,6 +376,8 @@ class MainWindow(QMainWindow):
             return
         if state == LiveState.ERROR:
             self._state_machine.reset()
+        if not self._settings_page.is_config_valid():
+            return
         if self._state_machine.can_start:
             self._on_start_pressed()
 
@@ -325,6 +405,13 @@ class MainWindow(QMainWindow):
     def _on_config_changed(self, config: AppConfig) -> None:
         """设置页配置变更时持久化。"""
         save_config(config)
+        if self._state_machine.current_state == LiveState.IDLE:
+            self._on_state_changed(LiveState.IDLE, LiveState.IDLE)
+
+    def _on_config_validity_changed(self, _valid: bool) -> None:
+        """配置有效性变化时同步启动按钮和顶部状态。"""
+        if self._state_machine.current_state == LiveState.IDLE:
+            self._on_state_changed(LiveState.IDLE, LiveState.IDLE)
 
     # ---- 窗口关闭 ----
 
