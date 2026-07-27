@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import math
 import multiprocessing as mp
 import os
 import queue
@@ -19,28 +20,47 @@ from pathlib import Path
 
 import live2d.v3 as live2d
 import pygame
-from OpenGL.GL import glGetError
+from OpenGL.GL import GL_BLEND, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA, glBlendFunc, glEnable, glGetError
 from pygame.locals import DOUBLEBUF, KEYDOWN, K_ESCAPE, MOUSEBUTTONDOWN, MOUSEBUTTONUP, MOUSEMOTION, NOFRAME, OPENGL, QUIT
 
 from virtual_avatar_system.controller.avatar_controller import AvatarOutputState
 
 LOGGER = logging.getLogger(__name__)
 WINDOW_SIZE: tuple[int, int] = (1280, 720)
-TRANSPARENT_KEY_RGB: tuple[int, int, int] = (0, 255, 0)
-TRANSPARENT_CLEAR_RGBA: tuple[float, float, float, float] = (0.0, 1.0, 0.0, 1.0)
+# 逐像素 alpha 透明：清屏时 alpha=0 表示完全透明，DWM 负责与桌面合成
+TRANSPARENT_CLEAR_RGBA: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
 user32 = ctypes.windll.user32
 GWL_EXSTYLE = -20
 WS_EX_LAYERED = 0x00080000
-LWA_COLORKEY = 0x00000001
 SWP_NOSIZE = 0x0001
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 
+# DWM 模糊背景常量
+DWM_BB_ENABLE = 0x00000001
 
-def _rgb_colorref(red: int, green: int, blue: int) -> int:
-    """把 RGB 值转换成 Windows 颜色键需要的 COLORREF。"""
-    return red | (green << 8) | (blue << 16)
+
+class _DwmBlurBehind(ctypes.Structure):
+    """DWM 模糊背景参数结构体。"""
+
+    _fields_ = [
+        ("dwFlags", wintypes.DWORD),
+        ("fEnable", wintypes.BOOL),
+        ("hRgnBlur", wintypes.HRGN),
+        ("fTransitionOnMaximized", wintypes.BOOL),
+    ]
+
+
+class _Margins(ctypes.Structure):
+    """窗口边距结构体，用于 DwmExtendFrameIntoClientArea。"""
+
+    _fields_ = [
+        ("cxLeftWidth", wintypes.INT),
+        ("cxRightWidth", wintypes.INT),
+        ("cyTopHeight", wintypes.INT),
+        ("cyBottomHeight", wintypes.INT),
+    ]
 
 
 def _get_window_handle() -> int:
@@ -69,12 +89,28 @@ def _get_cursor_position() -> tuple[int, int]:
 
 
 def _enable_transparent_window(hwnd: int) -> None:
-    """把窗口设置为分层窗口，并使用颜色键抠掉背景。"""
+    """使用 DWM 逐像素 alpha 实现真正的透明窗口，无色键溢边。"""
     ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
     user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED)
-    color_key = _rgb_colorref(*TRANSPARENT_KEY_RGB)
-    if not user32.SetLayeredWindowAttributes(hwnd, color_key, 0, LWA_COLORKEY):
-        raise ctypes.WinError()
+
+    # DwmEnableBlurBehindWindow 让 DWM 按 alpha 通道合成窗口
+    # alpha=0 的像素完全透明，alpha=1 的像素完全显示，边缘自然过渡
+    dwmapi = ctypes.windll.dwmapi
+    blur = _DwmBlurBehind()
+    blur.dwFlags = DWM_BB_ENABLE
+    blur.fEnable = True
+    blur.hRgnBlur = None
+    blur.fTransitionOnMaximized = False
+    result = dwmapi.DwmEnableBlurBehindWindow(hwnd, ctypes.byref(blur))
+    if result != 0:
+        LOGGER.warning("DWM 透明窗口设置失败（错误码 %s），窗口背景可能不透明", result)
+        return
+
+    # 将 DWM 帧扩展到整个客户区，确保逐像素 alpha 合成覆盖全窗口
+    margins = _Margins(-1, -1, -1, -1)
+    result2 = dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+    if result2 != 0:
+        LOGGER.warning("DwmExtendFrameIntoClientArea 失败（错误码 %s）", result2)
 
 
 def _move_window(hwnd: int, x: int, y: int) -> None:
@@ -107,20 +143,53 @@ def _load_expressions(model: live2d.LAppModel, model_json_path: Path) -> list[st
     return expression_ids
 
 
-def _apply_avatar_output(model: live2d.LAppModel, output: AvatarOutputState, last_expression: str) -> str:
-    """把控制层输出映射到 Live2D 参数。"""
+def _apply_avatar_output(
+    model: live2d.LAppModel,
+    output: AvatarOutputState,
+    last_expression: str,
+    last_motion: tuple[str, int],
+    motion_playing: bool,
+) -> tuple[str, tuple[str, int], bool]:
+    """把控制层输出映射到 Live2D 参数。
+
+    Args:
+        model: Live2D 模型实例
+        output: 控制层输出状态
+        last_expression: 上一次设置的表情
+        last_motion: 上一次设置的动作 (group, index)
+        motion_playing: 当前是否有动作正在播放
+
+    Returns:
+        (当前表情, 当前动作, 动作是否正在播放)
+    """
+    # 更新基础参数（头部姿态、眼部、嘴部）
     model.SetParameterValue("PARAM_ANGLE_X", output.param_angle_x)
     model.SetParameterValue("PARAM_ANGLE_Y", output.param_angle_y)
     model.SetParameterValue("PARAM_ANGLE_Z", output.param_angle_z)
+    # 身体姿态
+    model.SetParameterValue("PARAM_BODY_ANGLE_X", output.param_body_angle_x)
+    model.SetParameterValue("PARAM_BODY_ANGLE_Y", output.param_body_angle_y)
+    model.SetParameterValue("PARAM_BODY_ANGLE_Z", output.param_body_angle_z)
     model.SetParameterValue("PARAM_EYE_L_OPEN", output.param_eye_l_open)
     model.SetParameterValue("PARAM_EYE_R_OPEN", output.param_eye_r_open)
     model.SetParameterValue("PARAM_MOUTH_OPEN_Y", output.param_mouth_open_y)
 
+    # 表情：允许被新的表情打断
     if output.expression and output.expression != last_expression:
         model.SetExpression(output.expression)
         last_expression = output.expression
+        LOGGER.debug("播放表情：%s", output.expression)
 
-    return last_expression
+    # 动作：不允许被新的动作打断
+    # 只有在没有动作播放时，才播放新动作
+    current_motion = (output.motion_group, output.motion_index)
+    if output.motion_group and current_motion != last_motion and not motion_playing:
+        model.StartMotion(output.motion_group, output.motion_index, live2d.MotionPriority.FORCE)
+        last_motion = current_motion
+        motion_playing = True
+        LOGGER.info("播放动作：%s[%d]", output.motion_group, output.motion_index)
+
+    return last_expression, last_motion, motion_playing
 
 
 def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutputState], stop_event: mp.Event) -> None:
@@ -136,6 +205,9 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
 
     pygame.init()
     pygame.display.set_caption("Live2D 形象窗口")
+    # 请求带 alpha 通道的 OpenGL 像素格式，DWM 才能按逐像素 alpha 合成透明背景
+    pygame.display.gl_set_attribute(pygame.GL_ALPHA_SIZE, 8)
+    pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
     pygame.display.set_mode(WINDOW_SIZE, DOUBLEBUF | OPENGL | NOFRAME)
     pygame.mouse.set_visible(True)
 
@@ -144,6 +216,9 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
 
     live2d.init()
     live2d.glInit()
+    # 开启 OpenGL alpha 混合，模型边缘与透明背景自然过渡，无色键溢边
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
     model = live2d.LAppModel()
     model.LoadModelJson(str(model_json_path))
@@ -164,6 +239,14 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
     drag_cursor_origin = (0, 0)
     latest_output = AvatarOutputState()
     last_expression = ""
+    last_motion: tuple[str, int] = ("", 0)
+    motion_playing = False
+    motion_start_time = 0.0
+    MOTION_MIN_DURATION = 2.0
+    # 方案3：呼吸待机动画
+    breath_phase = 0.0
+    BREATH_SPEED = 0.015
+    BREATH_AMPLITUDE = 1.0
 
     try:
         while running and not stop_event.is_set():
@@ -192,7 +275,25 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
                     delta_y = cursor_y - drag_cursor_origin[1]
                     _move_window(hwnd, drag_window_origin[0] + delta_x, drag_window_origin[1] + delta_y)
 
-            last_expression = _apply_avatar_output(model, latest_output, last_expression)
+            # 检测动作是否播放完成（基于时间）
+            current_time = pygame.time.get_ticks() / 1000.0
+            if motion_playing and (current_time - motion_start_time) >= MOTION_MIN_DURATION:
+                motion_playing = False
+                LOGGER.debug("动作播放完成")
+
+            last_expression, last_motion, motion_playing = _apply_avatar_output(
+                model, latest_output, last_expression, last_motion, motion_playing
+            )
+            
+            # 如果播放了新动作，记录开始时间
+            if last_motion != ("", 0) and not motion_playing:
+                motion_start_time = current_time
+
+            # 方案3：呼吸待机动画，始终运行
+            breath_phase += BREATH_SPEED
+            if breath_phase > 2.0 * 3.14159:
+                breath_phase -= 2.0 * 3.14159
+            model.SetParameterValue("PARAM_BREATH", (math.sin(breath_phase) + 1.0) / 2.0 * BREATH_AMPLITUDE)
 
             # 先更新模型，再绘制当前帧。
             model.Update()

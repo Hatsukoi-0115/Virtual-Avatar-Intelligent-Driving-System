@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import queue
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +15,56 @@ import numpy as np
 from virtual_avatar_system.audio.types import AudioChunk
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_device_name(name: str) -> str:
+    """把系统返回的设备名整理成适合下拉菜单显示的一行文本。"""
+    normalized = re.sub(r"\s+", " ", name).strip()
+    return normalized or "未命名麦克风"
+
+
+def _is_microphone_device(name: str) -> bool:
+    """判断设备名是否更像真实麦克风输入，而不是扬声器回环或混音源。"""
+    normalized = name.casefold()
+    excluded_keywords = (
+        "扬声器",
+        "speaker",
+        "output",
+        "立体声混音",
+        "stereo mix",
+        "loopback",
+        "monitor",
+    )
+    if any(keyword in normalized for keyword in excluded_keywords):
+        return False
+
+    included_keywords = (
+        "麦克风",
+        "microphone",
+        "mic",
+        "input",
+        "capture",
+        "声音捕获",
+        "耳机",
+        "headset",
+        "hands-free",
+    )
+    return any(keyword in normalized for keyword in included_keywords)
+
+
+def list_available_microphone_devices() -> list[tuple[int, str]]:
+    """扫描本机可用的麦克风输入设备。"""
+    import sounddevice as sd
+
+    devices: list[tuple[int, str]] = []
+    for index, device in enumerate(sd.query_devices()):
+        if int(device.get("max_input_channels", 0)) <= 0:
+            continue
+        name = _normalize_device_name(str(device.get("name", f"麦克风 {index}")))
+        if not _is_microphone_device(name):
+            continue
+        devices.append((index, name))
+    return devices
 
 
 @dataclass(slots=True)

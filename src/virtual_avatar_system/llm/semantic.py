@@ -14,71 +14,106 @@ from langchain_openai import ChatOpenAI
 
 LOGGER = logging.getLogger(__name__)
 
-MOTION_LABELS: Final[tuple[str, ...]] = (
-    "idle_calm",
-    "idle_relaxed",
-    "idle_curious",
-    "flick_bounce",
-    "flick_surprise",
-    "flick_nod",
-    "tap_excited",
-    "tap_think",
-    "tap_agree",
-    "tap_emphasize",
-    "tap_cheerful",
-    "tap_curious",
-    "flick_right_glance",
-    "flick_right_talk",
-    "flick_right_reply",
-    "flick3_double_bounce",
-    "flick3_greet",
-    "flick3_laugh",
-    "flick_left_glance",
-    "flick_left_respond",
-    "flick_left_talk",
-    "shake_deny",
-    "shake_surprise",
-)
+_PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
+_MOTION_MAPS_PATH: Final[Path] = _PROJECT_ROOT / "configs" / "motion_maps.json"
+# 懒加载缓存：{model_name: loaded_data}
+_motion_map_cache: dict[str, dict[str, Any]] = {}
+# 预编译缓存：{model_name: {description: [(label, group, index), ...]}}
+_motion_group_cache: dict[str, dict[str, list[tuple[str, str, int]]]] = {}
 
-MOTION_DESCRIPTIONS: Final[tuple[str, ...]] = (
-    "待机、平静站立",
-    "放松、轻微倾斜",
-    "好奇、左右观望",
-    "点头、认同",
-    "摇头、否认",
-    "托下巴、思考",
-    "不满、强调",
-    "双手合十、开心",
-    "后仰、惊讶",
-    "反问、强调",
-    "疑问",
-    "害羞、脸红",
-    "恶作剧、窃喜",
-    "惊喜、身体一震",
-    "回复后的默认状态",
-    "认同、点头",
-    "开心、打招呼",
-    "开心、轻笑",
-    "垂头、无奈",
-    "发表见解、明白",
-    "被逗笑",
-    "害羞、惊喜、疑惑",
-    "激动、兴奋",
-)
 
-MOTION_CANDIDATES: Final[str] = "\n".join(
-    f"- {label}: {description}"
-    for label, description in zip(MOTION_LABELS, MOTION_DESCRIPTIONS, strict=True)
-)
+def _load_motion_map(model_name: str) -> dict[str, Any]:
+    """从 motion_maps.json 加载指定模型的动作映射，带缓存。"""
+    if model_name in _motion_map_cache:
+        return _motion_map_cache[model_name]
 
-SYSTEM_PROMPT: Final[str] = f"""你是虚拟形象的低频语义理解器。根据一段自然语句，从候选动作标签中选择最匹配的一项。
+    if not _MOTION_MAPS_PATH.exists():
+        LOGGER.warning("动作映射文件不存在：%s", _MOTION_MAPS_PATH)
+        _motion_map_cache[model_name] = {}
+        return {}
 
-候选标签：
-{MOTION_CANDIDATES}
+    try:
+        with _MOTION_MAPS_PATH.open("r", encoding="utf-8") as f:
+            all_maps = json.load(f)
+        data = all_maps.get(model_name, {})
+        _motion_map_cache[model_name] = data
+        # 预编译 motions 字典为扁平的 description→[(label,group,index)] 结构
+        motions_raw: dict[str, list[dict]] = data.get("motions", {})
+        _motion_group_cache[model_name] = {
+            desc: [(m["label"], m["group"], m["index"]) for m in entries]
+            for desc, entries in motions_raw.items()
+        }
+        return data
+    except json.JSONDecodeError as exc:
+        LOGGER.warning("动作映射文件解析失败：%s", exc)
+        _motion_map_cache[model_name] = {}
+        _motion_group_cache[model_name] = {}
+        return {}
+
+
+def _build_system_prompt(model_name: str) -> str:
+    """根据模型的动作映射动态生成 LLM system prompt。让 LLM 返回描述而非标签。"""
+    data = _load_motion_map(model_name)
+    descriptions = data.get("descriptions", [])
+    if not descriptions:
+        LOGGER.warning("模型 '%s' 无动作描述列表，LLM 将无法正常工作", model_name)
+        return "你是虚拟形象的低频语义理解器。模型未配置动作映射，请检查配置。只返回 JSON。"
+
+    candidates = "\n".join(f"- {d}" for d in descriptions)
+    return f"""你是虚拟形象的低频语义理解器。根据一段自然语句，从候选描述中选择最匹配的一项，若均不匹配则选择"待机"。
+
+候选描述：
+{candidates}
 
 返回 JSON：
-{{"label":"上面候选标签之一","confidence":0.0到1.0,"summary":"不超过20个中文字符"}}
+{{"description":"上面候选描述之一","confidence":0.0到1.0,"summary":"不超过20个中文字符"}}
 只返回 JSON，不要添加解释。"""
+
+
+def _get_motion_entries(model_name: str) -> dict[str, list[tuple[str, str, int]]]:
+    """获取预编译的 description → [(label, group, index)] 映射。"""
+    if model_name not in _motion_group_cache:
+        _load_motion_map(model_name)
+    return _motion_group_cache.get(model_name, {})
+
+
+def get_motion_label_to_group(model_name: str) -> dict[str, tuple[str, int]]:
+    """获取指定模型的动作标签到动作组的扁平映射。"""
+    entries = _get_motion_entries(model_name)
+    return {
+        label: (group, index)
+        for motions in entries.values()
+        for label, group, index in motions
+    }
+
+
+def match_motion_description(model_name: str, description: str) -> str:
+    """根据 LLM 返回的描述字符串，从同描述的动作列表中随机选一个标签。
+    找不到匹配时从"待机"描述中随机选一个。"""
+    import random as _random
+
+    entries = _get_motion_entries(model_name)
+    # 精确匹配
+    if description in entries:
+        return _random.choice(entries[description])[0]
+    # 模糊匹配：查找包含关系
+    for desc, motions in entries.items():
+        if description in desc or desc in description:
+            return _random.choice(motions)[0]
+    # 回退到待机
+    idle_entries = entries.get("待机", [])
+    if idle_entries:
+        return _random.choice(idle_entries)[0]
+    return "idle_calm"
+
+
+def get_idle_labels(model_name: str) -> tuple[str, ...]:
+    """获取模型的所有 idle 标签，用于面部丢失随机选择。"""
+    entries = _get_motion_entries(model_name)
+    idle_motions = entries.get("待机", [])
+    if idle_motions:
+        return tuple(label for label, _, _ in idle_motions)
+    return ("idle_calm", "idle_relaxed", "idle_curious")
 
 
 @dataclass(slots=True)
@@ -101,6 +136,7 @@ class SemanticInterpreterConfig:
     base_url: str = ""
     api_key: str = ""
     model: str = ""
+    model_name: str = "haru_ja"
     min_interval_ms: int = 5000
     timeout_seconds: float = 8.0
     temperature: float = 0.1
@@ -111,6 +147,7 @@ class SemanticInterpreterConfig:
         base_url: str = "",
         api_key: str = "",
         model: str = "",
+        model_name: str = "haru_ja",
         min_interval_ms: int = 5000,
         env_path: Path | None = None,
     ) -> "SemanticInterpreterConfig":
@@ -119,6 +156,7 @@ class SemanticInterpreterConfig:
             base_url=base_url,
             api_key=api_key,
             model=model,
+            model_name=model_name,
             min_interval_ms=min_interval_ms,
         )
         if config.api_key and config.model:
@@ -130,6 +168,7 @@ class SemanticInterpreterConfig:
             base_url=config.base_url or env_values.get("LLM_BASE_URL", ""),
             api_key=config.api_key or env_values.get("LLM_API_KEY", ""),
             model=config.model or env_values.get("LLM_MODEL", ""),
+            model_name=model_name,
             min_interval_ms=min_interval_ms,
         )
 
@@ -141,13 +180,19 @@ class SemanticInterpreter:
         self.config = config
         self._client: ChatOpenAI | None = None
         self._last_call_at = 0.0
+        # 用模型配置中的第一个 idle 标签作为默认值
+        entries = _get_motion_entries(config.model_name)
+        all_motions = [m for motions in entries.values() for m in motions]
+        default_label = next((label for label, _, _ in all_motions if label.startswith("idle_")), "idle_calm")
         self._last_result = SemanticResult(
-            label="idle_calm",
+            label=default_label,
             confidence=0.0,
             summary="",
             timestamp=0.0,
             source="llm-cache",
         )
+        # 缓存动态生成的 system prompt
+        self._system_prompt = _build_system_prompt(config.model_name)
 
     def can_call(self, now: float | None = None) -> bool:
         """判断是否满足低频刷新间隔。"""
@@ -175,7 +220,7 @@ class SemanticInterpreter:
                 "context": context or {},
             }
             response = client.invoke([
-                SystemMessage(content=SYSTEM_PROMPT),
+                SystemMessage(content=self._system_prompt),
                 HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
             ])
             result = self._parse_response(self._extract_content(response), timestamp)
@@ -217,11 +262,11 @@ class SemanticInterpreter:
             return content.strip()
         return str(content).strip()
 
-    @staticmethod
-    def _parse_response(raw: str, timestamp: float) -> SemanticResult:
-        """解析 LLM JSON 输出，异常格式回退到 neutral。"""
+    def _parse_response(self, raw: str, timestamp: float) -> SemanticResult:
+        """解析 LLM JSON 输出，将返回的描述映射为随机动作标签。"""
         data = _coerce_json(raw)
-        label = _match_motion_label(str(data.get("label", "idle_calm")))
+        description = str(data.get("description", "")).strip()
+        label = match_motion_description(self.config.model_name, description)
 
         confidence = float(data.get("confidence", 0.0))
         confidence = max(0.0, min(1.0, confidence))
@@ -269,28 +314,18 @@ def _coerce_json(raw: str) -> dict[str, Any]:
         raise
 
 
-def _match_motion_label(raw_label: str) -> str:
-    """把 LLM 返回文本映射到预定义动作标签。"""
-    normalized = raw_label.strip().lower()
-    normalized = normalized.strip('"\'“”‘’.,!?。；：:;，。、（）()[]{}<>')
-    if normalized in MOTION_LABELS:
-        return normalized
-    for label in MOTION_LABELS:
-        if label in normalized:
-            return label
-    return "idle_calm"
-
-
 def main() -> None:
     """允许模块独立运行，方便调试 LLM 标签匹配。"""
     import argparse
 
     parser = argparse.ArgumentParser(description="LLM 语义标签匹配调试")
     parser.add_argument("sentence", nargs="+", help="要匹配的自然语句")
+    parser.add_argument("--model-name", default="haru_ja", help="模型名称")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-    interpreter = SemanticInterpreter(SemanticInterpreterConfig.from_sources())
+    config = SemanticInterpreterConfig.from_sources(model_name=args.model_name)
+    interpreter = SemanticInterpreter(config)
     result = interpreter.interpret(" ".join(args.sentence))
     print(f"标签={result.label} 置信度={result.confidence:.2f} 摘要={result.summary} 错误={result.error}", flush=True)
 

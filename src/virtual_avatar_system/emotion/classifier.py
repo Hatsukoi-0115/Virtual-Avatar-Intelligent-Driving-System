@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -26,6 +27,39 @@ LABEL_MAPPING: Final[dict[int, str]] = {
     6: "惊讶",
     7: "厌恶",
 }
+
+# 情绪标签到 Live2D 表情 ID 的映射（从配置文件加载，不再硬编码）
+_EMOTION_MAPS_PATH: Final[Path] = PROJECT_ROOT / "configs" / "emotion_maps.json"
+_emotion_map_cache: dict[str, dict[str, str]] = {}
+
+
+def _load_emotion_map(model_name: str) -> dict[str, str]:
+    """从 emotion_maps.json 加载指定模型的表情映射，带缓存。"""
+    if model_name in _emotion_map_cache:
+        return _emotion_map_cache[model_name]
+
+    if not _EMOTION_MAPS_PATH.exists():
+        LOGGER.warning("表情映射文件不存在：%s", _EMOTION_MAPS_PATH)
+        _emotion_map_cache[model_name] = {}
+        return {}
+
+    try:
+        with _EMOTION_MAPS_PATH.open("r", encoding="utf-8") as f:
+            all_maps = json.load(f)
+        data = all_maps.get(model_name, {})
+        _emotion_map_cache[model_name] = data
+        return data
+    except json.JSONDecodeError as exc:
+        LOGGER.warning("表情映射文件解析失败：%s", exc)
+        _emotion_map_cache[model_name] = {}
+        return {}
+
+
+def emotion_to_expression(label: str, model_name: str = "haru_ja") -> str:
+    """把情绪标签转换为 Live2D 表情 ID，未知标签回退为 Normal。"""
+    mapping = _load_emotion_map(model_name)
+    return mapping.get(label, "Normal")
+
 
 RULE_KEYWORDS: Final[dict[str, tuple[str, ...]]] = {
     "开心": ("开心", "太好了", "棒", "哈哈", "喜欢", "完成了"),
