@@ -16,6 +16,7 @@ import signal
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
@@ -44,12 +45,45 @@ from virtual_avatar_system.vision.face_inference import FaceLandmarkInferencer
 from virtual_avatar_system.llm.semantic import get_idle_labels
 
 
+class UiLogHandler(logging.Handler):
+    """将 logging 输出安全转发到 Qt 后端输出面板。"""
+
+    def __init__(self, append_log: Callable[[str], None]) -> None:
+        super().__init__()
+        self._append_log = append_log
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """格式化日志记录并投递到 UI 线程安全入口。"""
+        try:
+            self._append_log(self.format(record))
+        except Exception:  # noqa: BLE001
+            self.handleError(record)
+
+
 def _configure_logging() -> None:
     """配置全局日志输出。"""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+
+
+def _attach_ui_log_handler(main_window: MainWindow) -> UiLogHandler:
+    """把后端日志流接入主窗口日志面板。"""
+    handler = UiLogHandler(main_window.append_backend_log)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    )
+    logging.getLogger().addHandler(handler)
+    return handler
+
+
+def _flush_ui_events() -> None:
+    """立即处理 UI 事件，让启动阶段文本在重资源加载前先显示出来。"""
+    app = QApplication.instance()
+    if app is not None:
+        app.processEvents()
 
 
 def main() -> None:
@@ -68,6 +102,8 @@ def main() -> None:
 
     # ---- 创建窗口 ----
     main_window = MainWindow(config)
+    ui_log_handler = _attach_ui_log_handler(main_window)
+    logger.info("后端输出日志面板已连接")
     main_window.show()
 
     # ---- 系统托盘 ----
@@ -84,12 +120,17 @@ def main() -> None:
     # 当前动作标签，由 LLM 语义回调更新
     latest_motion_label = ""
 
-    def _on_emotion(expression_id: str, confidence: float) -> None:
+    def _on_asr_text(text: str) -> None:
+        """ASR 文本回调：刷新直播状态页的最近识别文本。"""
+        main_window.update_asr_text(text)
+
+    def _on_emotion(expression_id: str, confidence: float, emotion_label: str) -> None:
         """语音情绪分类回调：更新当前表情，下一帧渲染时生效。"""
         nonlocal latest_expression
         if expression_id != latest_expression:
             logger.info("表情切换：%s → %s（置信度 %.2f）", latest_expression, expression_id, confidence)
         latest_expression = expression_id
+        main_window.update_emotion_result(emotion_label)
 
     def _on_semantic(label: str, confidence: float, summary: str) -> None:
         """LLM 语义理解回调：更新当前动作标签，下一帧渲染时生效。"""
@@ -100,6 +141,8 @@ def main() -> None:
         if label != latest_motion_label:
             logger.info("动作标签：%s（置信度 %.2f，摘要：%s）", label, confidence, summary)
             latest_motion_label = label
+            main_window.update_semantic_label(summary or label)
+            main_window.update_current_action(label)
             avatar_controller.set_motion_from_label(label)
 
     # ---- 视觉链路：摄像头采集 + MediaPipe 推理 ----
@@ -145,8 +188,10 @@ def main() -> None:
             _last_idle_trigger_time = now
             idle_label = random.choice(_idle_labels)
             logger.info("面部丢失，触发随机 Idle 动作：%s", idle_label)
+            main_window.update_current_action(idle_label)
             avatar_controller.set_motion_from_label(idle_label)
         _face_was_detected = latest.face_detected
+        main_window.update_camera_status("已连接" if latest.face_detected else "未检测到人脸")
         # 更新视觉特征和表情，保留动作信息
         avatar_controller._input.visual = latest
         avatar_controller._input.expression = latest_expression
@@ -159,22 +204,32 @@ def main() -> None:
 
     consume_timer.timeout.connect(_consume_features)
 
-    def _shutdown_runtime() -> None:
+    def _shutdown_runtime(stage_callback: Callable[[str], None] | None = None) -> None:
         """停止视觉采集、推理和渲染链路。"""
         nonlocal camera_source
+        if stage_callback is not None:
+            stage_callback("正在停止视觉桥接定时器...")
         feed_timer.stop()
         consume_timer.stop()
+        if stage_callback is not None:
+            stage_callback("正在关闭人脸推理...")
         inferencer.stop()
         if camera_source is not None:
+            if stage_callback is not None:
+                stage_callback("正在关闭摄像头...")
             camera_source.stop()
             camera_source = None
+        if stage_callback is not None:
+            stage_callback("正在关闭人物模型...")
         live2d_renderer.stop()
 
     # ---- 语音、情绪与 LLM 链路 ----
-    def _shutdown_speech() -> None:
+    def _shutdown_speech(stage_callback: Callable[[str], None] | None = None) -> None:
         """停止 C 链路并释放麦克风与 FunASR 资源。"""
         nonlocal speech_service
         if speech_service is not None:
+            if stage_callback is not None:
+                stage_callback("正在关闭麦克风和语音识别...")
             speech_service.stop()
             speech_service = None
 
@@ -193,8 +248,15 @@ def main() -> None:
         """
         nonlocal speech_service, camera_source
         logger.info("开始直播：启动视觉、渲染、语音/情绪/LLM 链路")
+        main_window.reset_live_dashboard()
+        main_window.update_startup_stage("准备启动")
+        main_window.update_camera_status("连接中")
+        main_window.update_microphone_status("启动中")
+        _flush_ui_events()
         try:
             current_config = main_window.config
+            main_window.update_startup_stage("创建摄像头采集器")
+            _flush_ui_events()
             camera_source = CameraFrameSource(
                 camera_index=current_config.camera_index,
                 width=current_config.camera_width,
@@ -208,11 +270,43 @@ def main() -> None:
                 current_config.camera_height,
                 current_config.camera_fps,
             )
-            live2d_renderer.start(resolve_project_path(get_model_path(main_window.config)))
+            # Live2D 窗口使用配置中的紧凑尺寸，减少透明窗口对其他应用的遮挡。
+            main_window.update_startup_stage("正在加载 Live2D 模型...")
+            _flush_ui_events()
+            live2d_renderer.start(
+                resolve_project_path(get_model_path(main_window.config)),
+                window_size=(current_config.preview_width, current_config.preview_height),
+                always_on_top=current_config.preview_always_on_top,
+            )
+            main_window.update_startup_stage("正在渲染人物...")
+            _flush_ui_events()
+            render_ready_deadline = time.monotonic() + 15.0
+            while not live2d_renderer.is_ready:
+                # 等待子进程完成第一帧绘制，让主窗口在人物即将出现后再切到运行页。
+                if not live2d_renderer.is_running:
+                    raise RuntimeError("Live2D 渲染进程异常退出")
+                if time.monotonic() >= render_ready_deadline:
+                    logger.warning("等待 Live2D 第一帧渲染超时，继续启动后续链路")
+                    main_window.update_startup_stage("人物渲染较慢，继续启动直播")
+                    break
+                _flush_ui_events()
+                time.sleep(0.05)
+            if live2d_renderer.is_ready:
+                main_window.update_startup_stage("人物已渲染")
+                _flush_ui_events()
+            main_window.update_startup_stage("打开摄像头")
+            _flush_ui_events()
             camera_source.start()
+            main_window.update_startup_stage("启动 MediaPipe 人脸推理")
+            _flush_ui_events()
             inferencer.start()
+            main_window.update_startup_stage("启动视觉桥接定时器")
+            _flush_ui_events()
             feed_timer.start()
             consume_timer.start()
+            main_window.update_camera_status("已连接")
+            main_window.update_startup_stage("视觉链路已就绪")
+            _flush_ui_events()
 
             main_window.state_machine.on_ready()
         except Exception as exc:  # noqa: BLE001
@@ -224,14 +318,23 @@ def main() -> None:
         # 语音/情绪/LLM 链路独立启动，失败时不影响视觉驱动
         try:
             if speech_service is None:
+                main_window.update_startup_stage("初始化语音/情绪/LLM 服务")
+                _flush_ui_events()
                 speech_service = LiveSpeechUnderstandingService(
                     LiveSpeechServiceConfig.from_app_config(main_window.config)
                 )
+                speech_service.on_asr_text(_on_asr_text)
                 speech_service.on_emotion(_on_emotion)
                 speech_service.on_semantic(_on_semantic)
+            main_window.update_startup_stage("启动麦克风监听")
+            _flush_ui_events()
             speech_service.start()
+            main_window.update_microphone_status("正在监听")
+            main_window.update_startup_stage("直播运行中")
         except Exception as exc:  # noqa: BLE001
             logger.warning("语音/情绪/LLM 链路启动失败，仅保留视觉驱动：%s", exc)
+            main_window.update_microphone_status("启动失败")
+            main_window.update_startup_stage("语音链路启动失败，视觉链路运行中")
             speech_service = None
 
     def on_stop() -> None:
@@ -245,8 +348,17 @@ def main() -> None:
         - 停止 C 链路后台线程
         """
         logger.info("停止直播：释放视觉、渲染、语音/情绪/LLM 链路")
-        _shutdown_speech()
-        _shutdown_runtime()
+        def _update_stop_stage(text: str) -> None:
+            """刷新停止阶段提示，并立即处理 UI 事件。"""
+            main_window.update_startup_stage(text)
+            _flush_ui_events()
+
+        _update_stop_stage("正在停止直播...")
+        main_window.update_microphone_status("已停止")
+        main_window.update_camera_status("已停止")
+        _shutdown_speech(_update_stop_stage)
+        _shutdown_runtime(_update_stop_stage)
+        _update_stop_stage("直播已停止")
         main_window.state_machine.on_stopped()
 
     main_window.on_start(on_start)
@@ -256,6 +368,7 @@ def main() -> None:
     def _quit_application() -> None:
         """统一退出函数，供关闭按钮、Ctrl+C、托盘菜单复用。"""
         logger.info("开始执行退出流程…")
+        logging.getLogger().removeHandler(ui_log_handler)
         _shutdown_speech()
         _shutdown_runtime()
         save_config(main_window.config)

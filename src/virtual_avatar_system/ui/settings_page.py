@@ -190,6 +190,7 @@ class SettingsPage(QWidget):
         main_layout.addWidget(self._build_camera_card())
         main_layout.addWidget(self._build_microphone_card())
         main_layout.addWidget(self._build_model_card())
+        main_layout.addWidget(self._build_llm_card())
         main_layout.addStretch()
 
         scroll_area.setWidget(content)
@@ -345,6 +346,46 @@ class SettingsPage(QWidget):
         layout.addWidget(self._model_path_error)
         return card
 
+    def _build_llm_card(self) -> QFrame:
+        """创建 LLM 配置卡片。"""
+        card = self._create_card("llmCard")
+        layout = self._create_card_layout(card)
+        layout.setSpacing(10)
+
+        title = QLabel("LLM 配置", self)
+        title.setObjectName("cardTitle")
+        layout.addWidget(title)
+
+        base_url_row = QHBoxLayout()
+        base_url_row.setSpacing(10)
+        base_url_row.addWidget(self._create_field_label("API 地址"))
+        self._llm_base_url_edit = QLineEdit(self)
+        self._llm_base_url_edit.setObjectName("llmInput")
+        self._llm_base_url_edit.setPlaceholderText("https://api.openai.com/v1")
+        base_url_row.addWidget(self._llm_base_url_edit, stretch=1)
+        layout.addLayout(base_url_row)
+
+        api_key_row = QHBoxLayout()
+        api_key_row.setSpacing(10)
+        api_key_row.addWidget(self._create_field_label("API Key"))
+        self._llm_api_key_edit = QLineEdit(self)
+        self._llm_api_key_edit.setObjectName("llmInput")
+        self._llm_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._llm_api_key_edit.setPlaceholderText("sk-...")
+        api_key_row.addWidget(self._llm_api_key_edit, stretch=1)
+        layout.addLayout(api_key_row)
+
+        model_row = QHBoxLayout()
+        model_row.setSpacing(10)
+        model_row.addWidget(self._create_field_label("模型名称"))
+        self._llm_model_edit = QLineEdit(self)
+        self._llm_model_edit.setObjectName("llmInput")
+        self._llm_model_edit.setPlaceholderText("gpt-4o-mini")
+        model_row.addWidget(self._llm_model_edit, stretch=1)
+        layout.addLayout(model_row)
+
+        return card
+
     def _create_card(self, object_name: str) -> QFrame:
         """创建统一卡片容器。"""
         card = QFrame(self)
@@ -431,7 +472,8 @@ class SettingsPage(QWidget):
             }
             QFrame#cameraCard,
             QFrame#microphoneCard,
-            QFrame#modelCard {
+            QFrame#modelCard,
+            QFrame#llmCard {
                 background: #FFFFFF;
                 border: 1px solid #E2E8F0;
                 border-radius: 12px;
@@ -462,6 +504,7 @@ class SettingsPage(QWidget):
                 font-weight: 700;
             }
             QLineEdit#numberInput,
+            QLineEdit#llmInput,
             QFrame#unitInput,
             QComboBox#fpsSelect,
             QComboBox#cameraSelect,
@@ -477,12 +520,17 @@ class SettingsPage(QWidget):
                 padding: 0 10px;
             }
             QLineEdit#numberInput:focus,
+            QLineEdit#llmInput:focus,
             QComboBox#fpsSelect:focus,
             QComboBox#cameraSelect:focus,
             QComboBox#microphoneSelect:focus,
             QComboBox#sampleRateSelect:focus {
                 border: 1px solid #0284C7;
                 background: #FFFFFF;
+            }
+            QLineEdit#llmInput {
+                padding: 0 12px;
+                min-height: 36px;
             }
             QLineEdit#unitInputEdit {
                 background: transparent;
@@ -583,6 +631,9 @@ class SettingsPage(QWidget):
         self._mic_sample_rate.currentTextChanged.connect(self._on_setting_changed)
         self._mic_block_size.valueChanged.connect(self._on_setting_changed)
         self._model_path_edit.textChanged.connect(self._on_setting_changed)
+        self._llm_base_url_edit.textChanged.connect(self._on_setting_changed)
+        self._llm_api_key_edit.textChanged.connect(self._on_setting_changed)
+        self._llm_model_edit.textChanged.connect(self._on_setting_changed)
 
     # ---- 配置加载与保存 ----
 
@@ -597,6 +648,9 @@ class SettingsPage(QWidget):
             self._mic_sample_rate,
             self._mic_block_size,
             self._model_path_edit,
+            self._llm_base_url_edit,
+            self._llm_api_key_edit,
+            self._llm_model_edit,
         )
         for widget in widgets:
             widget.blockSignals(True)
@@ -609,6 +663,9 @@ class SettingsPage(QWidget):
         self._set_combo_value(self._mic_sample_rate, f"{self._config.mic_sample_rate} Hz")
         self._mic_block_size.setValue(self._config.mic_block_size)
         self._model_path_edit.setText(self._config.model_paths.get(self._config.model_name, ""))
+        self._llm_base_url_edit.setText(self._config.llm_base_url)
+        self._llm_api_key_edit.setText(self._config.llm_api_key)
+        self._llm_model_edit.setText(self._config.llm_model)
 
         for widget in widgets:
             widget.blockSignals(False)
@@ -707,11 +764,14 @@ class SettingsPage(QWidget):
         self._config.mic_sample_rate = int(self._mic_sample_rate.currentText().split()[0])
         self._config.mic_block_size = self._mic_block_size.value()
         self._config.model_paths[self._config.model_name] = self._model_path_edit.text().strip()
+        self._config.llm_base_url = self._llm_base_url_edit.text().strip()
+        self._config.llm_api_key = self._llm_api_key_edit.text().strip()
+        self._config.llm_model = self._llm_model_edit.text().strip()
 
         self._set_config_valid(self._compute_config_validity())
 
         LOGGER.info(
-            "配置已更新：camera=%s %dx%d@%dfps mic=%s %sHz block=%s valid=%s",
+            "配置已更新：camera=%s %dx%d@%dfps mic=%s %sHz block=%s llm_configured=%s valid=%s",
             self._config.camera_index,
             self._config.camera_width,
             self._config.camera_height,
@@ -719,6 +779,7 @@ class SettingsPage(QWidget):
             self._config.microphone_index,
             self._config.mic_sample_rate,
             self._config.mic_block_size,
+            bool(self._config.llm_api_key and self._config.llm_model),
             self._is_config_valid,
         )
 

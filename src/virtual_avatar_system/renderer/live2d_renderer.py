@@ -15,6 +15,7 @@ import math
 import multiprocessing as mp
 import os
 import queue
+import time
 from ctypes import wintypes
 from pathlib import Path
 
@@ -26,13 +27,17 @@ from pygame.locals import DOUBLEBUF, KEYDOWN, K_ESCAPE, MOUSEBUTTONDOWN, MOUSEBU
 from virtual_avatar_system.controller.avatar_controller import AvatarOutputState
 
 LOGGER = logging.getLogger(__name__)
-WINDOW_SIZE: tuple[int, int] = (1280, 720)
+DEFAULT_WINDOW_SIZE: tuple[int, int] = (360, 640)
+MIN_WINDOW_SIZE: tuple[int, int] = (240, 360)
+MAX_WINDOW_SIZE: tuple[int, int] = (960, 1080)
 # 逐像素 alpha 透明：清屏时 alpha=0 表示完全透明，DWM 负责与桌面合成
 TRANSPARENT_CLEAR_RGBA: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
 user32 = ctypes.windll.user32
 GWL_EXSTYLE = -20
 WS_EX_LAYERED = 0x00080000
+HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
 SWP_NOSIZE = 0x0001
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
@@ -70,6 +75,23 @@ def _get_window_handle() -> int:
     if not hwnd:
         raise RuntimeError("无法获取窗口句柄，透明窗口设置失败")
     return int(hwnd)
+
+
+def _get_valid_window_handle(retry_count: int = 20, interval_seconds: float = 0.05) -> int:
+    """等待并获取可用的 Windows 窗口句柄。"""
+    last_hwnd = 0
+    for _ in range(retry_count):
+        pygame.event.pump()
+        try:
+            last_hwnd = _get_window_handle()
+        except RuntimeError:
+            last_hwnd = 0
+        # Pygame 创建 OpenGL 窗口后，句柄可能需要短暂时间才被系统识别。
+        if last_hwnd and user32.IsWindow(last_hwnd):
+            return last_hwnd
+        time.sleep(interval_seconds)
+
+    raise RuntimeError(f"无法获取有效窗口句柄：{last_hwnd}")
 
 
 def _get_window_position(hwnd: int) -> tuple[int, int]:
@@ -119,12 +141,36 @@ def _move_window(hwnd: int, x: int, y: int) -> None:
         raise ctypes.WinError()
 
 
+def _set_window_topmost(hwnd: int, enabled: bool) -> bool:
+    """设置 Live2D 窗口置顶，避免被主窗口遮住。"""
+    if not user32.IsWindow(hwnd):
+        LOGGER.warning("Live2D 窗口句柄无效，跳过置顶设置：%s", hwnd)
+        return False
+
+    insert_after = HWND_TOPMOST if enabled else HWND_NOTOPMOST
+    if not user32.SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE):
+        LOGGER.warning("Live2D 窗口置顶设置失败：%s", ctypes.WinError())
+        return False
+    return True
+
+
 def _configure_logging() -> None:
     """配置日志，便于定位渲染和模型加载问题。"""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+
+
+def _normalize_window_size(window_size: tuple[int, int] | None) -> tuple[int, int]:
+    """校验并限制 Live2D 窗口尺寸，避免透明区域过大或模型被过度裁切。"""
+    if window_size is None:
+        return DEFAULT_WINDOW_SIZE
+
+    width, height = window_size
+    width = max(MIN_WINDOW_SIZE[0], min(MAX_WINDOW_SIZE[0], int(width)))
+    height = max(MIN_WINDOW_SIZE[1], min(MAX_WINDOW_SIZE[1], int(height)))
+    return width, height
 
 
 def _load_expressions(model: live2d.LAppModel, model_json_path: Path) -> list[str]:
@@ -192,7 +238,14 @@ def _apply_avatar_output(
     return last_expression, last_motion, motion_playing
 
 
-def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutputState], stop_event: mp.Event) -> None:
+def _render_worker(
+    model_json_path_str: str,
+    window_size: tuple[int, int],
+    always_on_top: bool,
+    command_queue: mp.Queue[AvatarOutputState],
+    stop_event: mp.Event,
+    ready_event: mp.Event,
+) -> None:
     """独立渲染进程入口。"""
     _configure_logging()
 
@@ -208,11 +261,17 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
     # 请求带 alpha 通道的 OpenGL 像素格式，DWM 才能按逐像素 alpha 合成透明背景
     pygame.display.gl_set_attribute(pygame.GL_ALPHA_SIZE, 8)
     pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
-    pygame.display.set_mode(WINDOW_SIZE, DOUBLEBUF | OPENGL | NOFRAME)
+    pygame.display.set_mode(window_size, DOUBLEBUF | OPENGL | NOFRAME)
     pygame.mouse.set_visible(True)
+    LOGGER.info("Live2D 形象窗口尺寸：%sx%s", window_size[0], window_size[1])
 
-    hwnd = _get_window_handle()
+    hwnd = _get_valid_window_handle()
     _enable_transparent_window(hwnd)
+    topmost_applied = _set_window_topmost(hwnd, always_on_top)
+    LOGGER.info(
+        "Live2D 形象窗口置顶：%s",
+        "开启" if always_on_top and topmost_applied else "未开启",
+    )
 
     live2d.init()
     live2d.glInit()
@@ -222,7 +281,7 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
 
     model = live2d.LAppModel()
     model.LoadModelJson(str(model_json_path))
-    model.Resize(*WINDOW_SIZE)
+    model.Resize(*window_size)
     # 眨眼由 MediaPipe 的眼部开合输入接管，不再使用 Live2D 内置自动眨眼。
     model.SetAutoBlinkEnable(False)
     model.SetAutoBreathEnable(True)
@@ -243,6 +302,7 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
     motion_playing = False
     motion_start_time = 0.0
     MOTION_MIN_DURATION = 2.0
+    first_frame_rendered = False
     # 方案3：呼吸待机动画
     breath_phase = 0.0
     BREATH_SPEED = 0.015
@@ -304,6 +364,11 @@ def _render_worker(model_json_path_str: str, command_queue: mp.Queue[AvatarOutpu
                 LOGGER.warning("OpenGL 渲染过程中检测到错误")
 
             pygame.display.flip()
+            if not first_frame_rendered:
+                # 第一帧完成后通知主窗口，避免用户在模型加载期间看到空白等待。
+                first_frame_rendered = True
+                ready_event.set()
+                LOGGER.info("Live2D 第一帧已渲染")
             clock.tick(60)
     finally:
         model.DestroyRenderer()
@@ -323,17 +388,24 @@ class Live2DRenderer:
         self._process: mp.Process | None = None
         self._command_queue: mp.Queue[AvatarOutputState] | None = None
         self._stop_event: mp.Event | None = None
+        self._ready_event: mp.Event | None = None
         self._model_json_path: Path | None = None
         self._latest_output = AvatarOutputState()
 
     # ---- 生命周期 ----
 
-    def start(self, model_json_path: Path) -> None:
+    def start(
+        self,
+        model_json_path: Path,
+        window_size: tuple[int, int] | None = None,
+        always_on_top: bool = True,
+    ) -> None:
         """启动 Live2D 渲染窗口。"""
         if self.is_running:
             LOGGER.warning("Live2D 渲染进程已在运行")
             return
 
+        normalized_window_size = _normalize_window_size(window_size)
         model_json_path = Path(model_json_path)
         if not model_json_path.exists():
             raise FileNotFoundError(f"未找到 Live2D 模型入口文件：{model_json_path}")
@@ -341,16 +413,30 @@ class Live2DRenderer:
         context = mp.get_context("spawn")
         self._command_queue = context.Queue(maxsize=2)
         self._stop_event = context.Event()
+        self._ready_event = context.Event()
         self._model_json_path = model_json_path
 
         self._process = context.Process(
             target=_render_worker,
             name="live2d-renderer",
-            args=(str(model_json_path), self._command_queue, self._stop_event),
+            args=(
+                str(model_json_path),
+                normalized_window_size,
+                always_on_top,
+                self._command_queue,
+                self._stop_event,
+                self._ready_event,
+            ),
             daemon=True,
         )
         self._process.start()
-        LOGGER.info("Live2D 渲染窗口已启动：%s", model_json_path.name)
+        LOGGER.info(
+            "Live2D 渲染窗口已启动：%s %sx%s always_on_top=%s",
+            model_json_path.name,
+            normalized_window_size[0],
+            normalized_window_size[1],
+            always_on_top,
+        )
 
     def stop(self) -> None:
         """停止渲染进程并释放资源。"""
@@ -366,6 +452,7 @@ class Live2DRenderer:
         self._process = None
         self._command_queue = None
         self._stop_event = None
+        self._ready_event = None
         self._model_json_path = None
         self._latest_output = AvatarOutputState()
         LOGGER.info("Live2D 渲染窗口已停止")
@@ -374,6 +461,11 @@ class Live2DRenderer:
     def is_running(self) -> bool:
         """当前渲染进程是否存活。"""
         return self._process is not None and self._process.is_alive()
+
+    @property
+    def is_ready(self) -> bool:
+        """当前渲染窗口是否已经完成第一帧绘制。"""
+        return self._ready_event is not None and self._ready_event.is_set()
 
     # ---- 控制输入 ----
 

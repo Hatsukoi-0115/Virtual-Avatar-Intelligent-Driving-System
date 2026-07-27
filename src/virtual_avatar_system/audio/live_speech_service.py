@@ -86,13 +86,19 @@ class LiveSpeechUnderstandingService:
         self._last_emotion_chars = 0
         self._last_emotion_at = 0.0
         self._emotion_threshold = config.emotion_confidence_threshold
+        # ASR 文本回调，主线程注册后在此触发
+        self._on_asr_text: Callable[[str], None] | None = None
         # 情绪→表情回调，主线程注册后在此触发
-        self._on_emotion: Callable[[str, float], None] | None = None
+        self._on_emotion: Callable[[str, float, str], None] | None = None
         # LLM语义→动作回调，主线程注册后在此触发
         self._on_semantic: Callable[[str, float, str], None] | None = None
 
-    def on_emotion(self, callback: Callable[[str, float], None]) -> None:
-        """注册情绪→表情回调，参数为 (表情ID, 置信度)。"""
+    def on_asr_text(self, callback: Callable[[str], None]) -> None:
+        """注册 ASR 文本回调，参数为当前累积句子。"""
+        self._on_asr_text = callback
+
+    def on_emotion(self, callback: Callable[[str, float, str], None]) -> None:
+        """注册情绪→表情回调，参数为 (表情ID, 置信度, 情绪标签)。"""
         self._on_emotion = callback
 
     def on_semantic(self, callback: Callable[[str, float, str], None]) -> None:
@@ -170,6 +176,11 @@ class LiveSpeechUnderstandingService:
         self._last_text_at = time.monotonic()
         self._sentence_text = current_sentence
         self._sentence_closed = False
+        if self._on_asr_text is not None:
+            try:
+                self._on_asr_text(current_sentence)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("ASR 文本回调异常：%s", exc)
 
         if self.config.debug_print_asr_text:
             print(f"[ASR_FULL] {current_sentence}", flush=True)
@@ -275,7 +286,7 @@ class LiveSpeechUnderstandingService:
         expression_id = emotion_to_expression(emotion.label, self.config.model_name)
         if self._on_emotion is not None:
             try:
-                self._on_emotion(expression_id, emotion.confidence)
+                self._on_emotion(expression_id, emotion.confidence, emotion.label)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("情绪回调异常：%s", exc)
 

@@ -25,16 +25,24 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from virtual_avatar_system.config.app_config import AppConfig, save_config
+from virtual_avatar_system.config.app_config import AppConfig, save_config, save_llm_env
+from virtual_avatar_system.ui.live_dashboard_page import LiveDashboardPage
 from virtual_avatar_system.ui.live_state_machine import LiveState, LiveStateMachine
 from virtual_avatar_system.ui.settings_page import SettingsPage
 from virtual_avatar_system.ui.system_tray import AppSystemTray
 
 LOGGER = logging.getLogger(__name__)
+CONFIG_WINDOW_SIZE: tuple[int, int] = (680, 660)
+CONFIG_MIN_SIZE: tuple[int, int] = (620, 620)
+CONFIG_MAX_WIDTH = 720
+LOADING_WINDOW_SIZE: tuple[int, int] = (440, 300)
+LOADING_MIN_SIZE: tuple[int, int] = (400, 260)
+LOADING_MAX_WIDTH = 520
 
 
 class MainWindow(QMainWindow):
@@ -81,14 +89,51 @@ class MainWindow(QMainWindow):
         """注入系统托盘实例。"""
         self._system_tray = tray
 
+    def append_backend_log(self, text: str) -> None:
+        """向后端输出面板追加一行日志。"""
+        self._live_dashboard.append_backend_log(text)
+
+    def reset_live_dashboard(self) -> None:
+        """重置直播运行状态页。"""
+        self._live_dashboard.reset()
+
+    def update_camera_status(self, text: str) -> None:
+        """更新直播页摄像头状态。"""
+        self._live_dashboard.update_camera_status(text)
+
+    def update_startup_stage(self, text: str) -> None:
+        """更新直播页启动阶段。"""
+        self._live_dashboard.update_startup_stage(text)
+        self._loading_stage_label.setText(text or "准备启动")
+
+    def update_microphone_status(self, text: str) -> None:
+        """更新直播页麦克风状态。"""
+        self._live_dashboard.update_microphone_status(text)
+
+    def update_asr_text(self, text: str) -> None:
+        """更新直播页 ASR 文本。"""
+        self._live_dashboard.update_asr_text(text)
+
+    def update_semantic_label(self, text: str) -> None:
+        """更新直播页语义标签。"""
+        self._live_dashboard.update_semantic_label(text)
+
+    def update_emotion_result(self, text: str) -> None:
+        """更新直播页情绪结果。"""
+        self._live_dashboard.update_emotion_result(text)
+
+    def update_current_action(self, text: str) -> None:
+        """更新直播页当前动作。"""
+        self._live_dashboard.update_current_action(text)
+
     # ---- UI 构建 ----
 
     def _setup_window(self) -> None:
         """设置主窗口属性。"""
         self.setWindowTitle("虚拟形象智能驱动系统")
-        self.resize(680, 660)
-        self.setMinimumSize(620, 620)
-        self.setMaximumWidth(720)
+        self.resize(*CONFIG_WINDOW_SIZE)
+        self.setMinimumSize(*CONFIG_MIN_SIZE)
+        self.setMaximumWidth(CONFIG_MAX_WIDTH)
 
     def _configure_ui_font(self) -> None:
         """主动加载中文字体，避免部分 Qt 环境回退到缺字形字体。"""
@@ -130,7 +175,14 @@ class MainWindow(QMainWindow):
         self._settings_page = SettingsPage(self._config, self)
         self._settings_page.on_config_changed(self._on_config_changed)
         self._settings_page.config_validity_changed.connect(self._on_config_validity_changed)
-        main_layout.addWidget(self._settings_page, stretch=1)
+
+        self._loading_page = self._build_loading_page()
+        self._live_dashboard = LiveDashboardPage(self)
+        self._content_stack = QStackedWidget(self)
+        self._content_stack.addWidget(self._settings_page)
+        self._content_stack.addWidget(self._loading_page)
+        self._content_stack.addWidget(self._live_dashboard)
+        main_layout.addWidget(self._content_stack, stretch=1)
 
         footer = QFrame(self)
         footer.setObjectName("footer")
@@ -194,6 +246,35 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._status_badge)
 
         return header
+
+    def _build_loading_page(self) -> QWidget:
+        """创建开播准备阶段的紧凑加载页。"""
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 8, 0, 8)
+        layout.setSpacing(16)
+        layout.addStretch()
+
+        card = QFrame(self)
+        card.setObjectName("loadingCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(22, 20, 22, 20)
+        card_layout.setSpacing(10)
+
+        self._loading_title_label = QLabel("正在启动直播", self)
+        self._loading_title_label.setObjectName("loadingTitle")
+        self._loading_title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(self._loading_title_label)
+
+        self._loading_stage_label = QLabel("准备启动", self)
+        self._loading_stage_label.setObjectName("loadingStage")
+        self._loading_stage_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_stage_label.setWordWrap(True)
+        card_layout.addWidget(self._loading_stage_label)
+
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
 
     def _apply_styles(self) -> None:
         """集中设置主窗口视觉样式。"""
@@ -296,10 +377,37 @@ class MainWindow(QMainWindow):
             QPushButton#primaryActionButton[mode="stop"]:hover {
                 background: #B91C1C;
             }
+            QFrame#loadingCard {
+                background: #FFFFFF;
+                border: 1px solid #E2E8F0;
+                border-radius: 12px;
+            }
+            QLabel#loadingTitle {
+                color: #0F172A;
+                font-size: 17px;
+                font-weight: 700;
+            }
+            QLabel#loadingStage {
+                color: #2563EB;
+                font-size: 14px;
+                font-weight: 600;
+            }
             """
         )
 
     # ---- 状态机联动 ----
+
+    def _apply_config_window_size(self) -> None:
+        """恢复配置页和运行页使用的主窗口尺寸。"""
+        self.setMinimumSize(*CONFIG_MIN_SIZE)
+        self.setMaximumWidth(CONFIG_MAX_WIDTH)
+        self.resize(*CONFIG_WINDOW_SIZE)
+
+    def _apply_loading_window_size(self) -> None:
+        """切换到开播准备阶段使用的紧凑窗口尺寸。"""
+        self.setMinimumSize(*LOADING_MIN_SIZE)
+        self.setMaximumWidth(LOADING_MAX_WIDTH)
+        self.resize(*LOADING_WINDOW_SIZE)
 
     def _connect_state_machine(self) -> None:
         """绑定状态机变化到 UI。"""
@@ -329,6 +437,22 @@ class MainWindow(QMainWindow):
             LiveState.STOPPING: "stopping",
             LiveState.ERROR: "error",
         }
+        # 准备和停止阶段都使用轻量加载页，避免重资源加载/释放期间给用户卡住的错觉。
+        if new == LiveState.PREPARING:
+            self._loading_title_label.setText("正在启动直播")
+            self._apply_loading_window_size()
+            self._content_stack.setCurrentWidget(self._loading_page)
+        elif new == LiveState.STOPPING:
+            self._loading_title_label.setText("正在停止直播")
+            self._apply_loading_window_size()
+            self._content_stack.setCurrentWidget(self._loading_page)
+        elif new == LiveState.RUNNING:
+            self._apply_config_window_size()
+            self._content_stack.setCurrentWidget(self._live_dashboard)
+        else:
+            self._apply_config_window_size()
+            self._content_stack.setCurrentWidget(self._settings_page)
+
         self._status_label.setText(state_text_map.get(new, "未知"))
         self._status_badge.setProperty("status", badge_status_map.get(new, "idle"))
         self._status_dot.setObjectName(dot_style_map.get(new, "statusDotIdle"))
@@ -405,6 +529,7 @@ class MainWindow(QMainWindow):
     def _on_config_changed(self, config: AppConfig) -> None:
         """设置页配置变更时持久化。"""
         save_config(config)
+        save_llm_env(config)
         if self._state_machine.current_state == LiveState.IDLE:
             self._on_state_changed(LiveState.IDLE, LiveState.IDLE)
 
