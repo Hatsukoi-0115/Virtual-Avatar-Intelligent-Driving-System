@@ -1,34 +1,32 @@
 """独立预览窗口模块。
 
 职责：
-- 以独立置顶小窗形式展示 Live2D 虚拟形象
-- 支持显示/隐藏、拖拽移动
-- 未来接入 Live2D 渲染层后在此窗口内绘制
+- 以独立置顶小窗口形式展示 Live2D 虚拟形象
+- 支持显示/隐藏、置顶切换和拖拽移动
+- 后续接入 Live2D 渲染层后在此窗口内绘制
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Final
 
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QMouseEvent
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 LOGGER = logging.getLogger(__name__)
 
-# 默认预览窗口尺寸与背景色
 DEFAULT_WIDTH: Final[int] = 360
 DEFAULT_HEIGHT: Final[int] = 640
-BG_COLOR: Final[QColor] = QColor(0, 255, 0)  # 绿色背景，后续与 Live2D 透明窗口配合
+BG_COLOR: Final[QColor] = QColor(0, 255, 0)
 
 
 class PreviewWindow(QWidget):
     """Live2D 虚拟形象预览小窗。
 
     关键行为：
-    - 默认置顶
+    - 可配置置顶
     - 无边框
     - 可鼠标拖动
     - 可显示/隐藏
@@ -48,7 +46,6 @@ class PreviewWindow(QWidget):
         """配置窗口外观与行为。"""
         self.setWindowTitle("虚拟形象预览")
         self.setFixedSize(DEFAULT_WIDTH, DEFAULT_HEIGHT)
-        # 无边框 + 置顶
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -97,4 +94,11 @@ class PreviewWindow(QWidget):
         if self.isVisible():
             self.hide()
         else:
+            self.show()
+
+    def set_always_on_top(self, enabled: bool) -> None:
+        """设置预览窗口是否始终置顶。"""
+        visible = self.isVisible()
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+        if visible:
             self.show()

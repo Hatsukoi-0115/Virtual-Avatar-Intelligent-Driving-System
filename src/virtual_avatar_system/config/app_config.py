@@ -33,9 +33,9 @@ class AppConfig:
     microphone_index: int = 0
 
     # ---- 摄像头参数 ----
-    camera_width: int = 1280
-    camera_height: int = 720
-    camera_fps: int = 30
+    camera_width: int = 320
+    camera_height: int = 240
+    camera_fps: int = 60
 
     # ---- 麦克风参数 ----
     mic_sample_rate: int = 16000
