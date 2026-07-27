@@ -37,12 +37,12 @@ from virtual_avatar_system.ui.settings_page import SettingsPage
 from virtual_avatar_system.ui.system_tray import AppSystemTray
 
 LOGGER = logging.getLogger(__name__)
-CONFIG_WINDOW_SIZE: tuple[int, int] = (680, 660)
-CONFIG_MIN_SIZE: tuple[int, int] = (620, 620)
-CONFIG_MAX_WIDTH = 720
-LOADING_WINDOW_SIZE: tuple[int, int] = (440, 300)
-LOADING_MIN_SIZE: tuple[int, int] = (400, 260)
-LOADING_MAX_WIDTH = 520
+CONFIG_WINDOW_SIZE: tuple[int, int] = (700, 720)
+CONFIG_MIN_SIZE: tuple[int, int] = (640, 660)
+CONFIG_MAX_WIDTH = 760
+LOADING_WINDOW_SIZE: tuple[int, int] = (520, 420)
+LOADING_MIN_SIZE: tuple[int, int] = (500, 390)
+LOADING_MAX_WIDTH = 620
 
 
 class MainWindow(QMainWindow):
@@ -257,20 +257,34 @@ class MainWindow(QMainWindow):
 
         card = QFrame(self)
         card.setObjectName("loadingCard")
+        card.setMinimumHeight(190)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(22, 20, 22, 20)
-        card_layout.setSpacing(10)
+        card_layout.setContentsMargins(26, 24, 26, 24)
+        card_layout.setSpacing(14)
+
+        self._loading_indicator = QFrame(self)
+        self._loading_indicator.setObjectName("loadingIndicator")
+        self._loading_indicator.setFixedSize(54, 54)
+        card_layout.addWidget(self._loading_indicator, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self._loading_title_label = QLabel("正在启动直播", self)
         self._loading_title_label.setObjectName("loadingTitle")
         self._loading_title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_title_label.setMinimumHeight(32)
         card_layout.addWidget(self._loading_title_label)
 
         self._loading_stage_label = QLabel("准备启动", self)
         self._loading_stage_label.setObjectName("loadingStage")
         self._loading_stage_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._loading_stage_label.setWordWrap(True)
+        self._loading_stage_label.setMinimumHeight(30)
         card_layout.addWidget(self._loading_stage_label)
+
+        loading_hint = QLabel("请稍候", self)
+        loading_hint.setObjectName("loadingHint")
+        loading_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        loading_hint.setMinimumHeight(24)
+        card_layout.addWidget(loading_hint)
 
         layout.addWidget(card)
         layout.addStretch()
@@ -281,16 +295,16 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QWidget#root {
-                background: #F8FAFC;
+                background: #F6F8FB;
                 color: #0F172A;
                 font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
                 font-size: 13px;
             }
             QLabel#brandMark {
-                background: #E0F2FE;
-                border: 1px solid #BAE6FD;
+                background: #EFF6FF;
+                border: 1px solid #BFDBFE;
                 border-radius: 8px;
-                color: #0284C7;
+                color: #2563EB;
                 font-size: 11px;
                 font-weight: 800;
             }
@@ -353,7 +367,7 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
             }
             QPushButton#primaryActionButton {
-                background: #0284C7;
+                background: #2563EB;
                 border: 0;
                 border-radius: 8px;
                 color: white;
@@ -362,10 +376,10 @@ class MainWindow(QMainWindow):
                 padding: 0 24px;
             }
             QPushButton#primaryActionButton:hover {
-                background: #0369A1;
+                background: #1D4ED8;
             }
             QPushButton#primaryActionButton:pressed {
-                background: #075985;
+                background: #1E40AF;
             }
             QPushButton#primaryActionButton:disabled {
                 background: #E2E8F0;
@@ -380,17 +394,31 @@ class MainWindow(QMainWindow):
             QFrame#loadingCard {
                 background: #FFFFFF;
                 border: 1px solid #E2E8F0;
-                border-radius: 12px;
+                border-radius: 8px;
+            }
+            QFrame#loadingIndicator {
+                background: #DBEAFE;
+                border: 8px solid #EFF6FF;
+                border-radius: 27px;
+            }
+            QFrame#loadingIndicator[mode="stopping"] {
+                background: #FECACA;
+                border: 8px solid #FEF2F2;
             }
             QLabel#loadingTitle {
                 color: #0F172A;
-                font-size: 17px;
+                font-size: 18px;
                 font-weight: 700;
             }
             QLabel#loadingStage {
                 color: #2563EB;
                 font-size: 14px;
                 font-weight: 600;
+            }
+            QLabel#loadingHint {
+                color: #64748B;
+                font-size: 12px;
+                font-weight: 500;
             }
             """
         )
@@ -440,10 +468,16 @@ class MainWindow(QMainWindow):
         # 准备和停止阶段都使用轻量加载页，避免重资源加载/释放期间给用户卡住的错觉。
         if new == LiveState.PREPARING:
             self._loading_title_label.setText("正在启动直播")
+            self._loading_indicator.setProperty("mode", "starting")
+            self._loading_indicator.style().unpolish(self._loading_indicator)
+            self._loading_indicator.style().polish(self._loading_indicator)
             self._apply_loading_window_size()
             self._content_stack.setCurrentWidget(self._loading_page)
         elif new == LiveState.STOPPING:
             self._loading_title_label.setText("正在停止直播")
+            self._loading_indicator.setProperty("mode", "stopping")
+            self._loading_indicator.style().unpolish(self._loading_indicator)
+            self._loading_indicator.style().polish(self._loading_indicator)
             self._apply_loading_window_size()
             self._content_stack.setCurrentWidget(self._loading_page)
         elif new == LiveState.RUNNING:

@@ -394,17 +394,17 @@ class SettingsPage(QWidget):
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(12)
-        shadow.setOffset(0, 2)
-        shadow.setColor(QColor(15, 23, 42, 18))
+        shadow.setBlurRadius(16)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(15, 23, 42, 14))
         card.setGraphicsEffect(shadow)
         return card
 
     def _create_card_layout(self, card: QFrame) -> QVBoxLayout:
         """创建卡片内部统一布局。"""
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 16, 20, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setSpacing(13)
         return layout
 
     def _create_field_label(self, text: str) -> QLabel:
@@ -468,15 +468,15 @@ class SettingsPage(QWidget):
             }
             QWidget#settingsViewport,
             QWidget#settingsContent {
-                background: #F8FAFC;
+                background: #F6F8FB;
             }
             QFrame#cameraCard,
             QFrame#microphoneCard,
             QFrame#modelCard,
             QFrame#llmCard {
                 background: #FFFFFF;
-                border: 1px solid #E2E8F0;
-                border-radius: 12px;
+                border: 1px solid #E5E7EB;
+                border-radius: 8px;
             }
             QLabel#cardTitle {
                 color: #0F172A;
@@ -510,7 +510,7 @@ class SettingsPage(QWidget):
             QComboBox#cameraSelect,
             QComboBox#microphoneSelect,
             QComboBox#sampleRateSelect {
-                background: #FFFFFF;
+                background: #F8FAFC;
                 border: 1px solid #E2E8F0;
                 border-radius: 6px;
                 color: #1E293B;
@@ -525,7 +525,7 @@ class SettingsPage(QWidget):
             QComboBox#cameraSelect:focus,
             QComboBox#microphoneSelect:focus,
             QComboBox#sampleRateSelect:focus {
-                border: 1px solid #0284C7;
+                border: 1px solid #2563EB;
                 background: #FFFFFF;
             }
             QLineEdit#llmInput {
@@ -573,7 +573,7 @@ class SettingsPage(QWidget):
                 selection-color: #0284C7;
             }
             QFrame#inputGroup {
-                background: #FFFFFF;
+                background: #F8FAFC;
                 border: 1px solid #E2E8F0;
                 border-radius: 6px;
             }
@@ -590,7 +590,7 @@ class SettingsPage(QWidget):
                 padding: 0 12px;
             }
             QPushButton#browseButton {
-                background: #F8FAFC;
+                background: #F1F5F9;
                 border: 0;
                 border-left: 1px solid #E2E8F0;
                 border-top-right-radius: 6px;
@@ -609,7 +609,7 @@ class SettingsPage(QWidget):
                 background: #CBD5E1;
             }
             QPushButton#secondaryButton {
-                background: #F1F5F9;
+                background: #FFFFFF;
                 border: 1px solid #E2E8F0;
                 border-radius: 6px;
                 color: #1E293B;

@@ -69,10 +69,10 @@ class LogPanel(QWidget):
         header = QFrame(self)
         header.setObjectName("logPanelHeader")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(4, 6, 4, 6)
+        header_layout.setContentsMargins(2, 4, 2, 6)
         header_layout.setSpacing(8)
 
-        title_label = QLabel("📋 后端输出", self)
+        title_label = QLabel("后端输出", self)
         title_label.setObjectName("logPanelTitle")
         header_layout.addWidget(title_label)
 
@@ -80,13 +80,13 @@ class LogPanel(QWidget):
 
         self._toggle_button = QPushButton("收起 ▲", self)
         self._toggle_button.setObjectName("logToggleButton")
-        self._toggle_button.setFixedSize(60, 22)
+        self._toggle_button.setFixedSize(66, 24)
         self._toggle_button.clicked.connect(self._toggle_collapse)
         header_layout.addWidget(self._toggle_button)
 
         clear_button = QPushButton("清空", self)
         clear_button.setObjectName("logClearButton")
-        clear_button.setFixedSize(44, 22)
+        clear_button.setFixedSize(48, 24)
         clear_button.clicked.connect(self.clear)
         header_layout.addWidget(clear_button)
 
@@ -97,8 +97,8 @@ class LogPanel(QWidget):
         self._log_view.setObjectName("logView")
         self._log_view.setReadOnly(True)
         self._log_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._log_view.setMinimumHeight(120)
-        self._log_view.setMaximumHeight(260)
+        self._log_view.setMinimumHeight(96)
+        self._log_view.setMaximumHeight(220)
         self._log_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self._log_view, stretch=1)
 
@@ -106,19 +106,19 @@ class LogPanel(QWidget):
 
     def _apply_styles(self) -> None:
         self.setStyleSheet("""
-            QWidget#logPanelHeader {
+            QFrame#logPanelHeader {
                 background: transparent;
             }
             QLabel#logPanelTitle {
-                color: #334155;
-                font-size: 12px;
-                font-weight: 600;
+                color: #0F172A;
+                font-size: 13px;
+                font-weight: 700;
             }
             QPushButton#logToggleButton,
             QPushButton#logClearButton {
-                background: #F1F5F9;
+                background: #FFFFFF;
                 border: 1px solid #E2E8F0;
-                border-radius: 4px;
+                border-radius: 6px;
                 color: #475569;
                 font-size: 11px;
                 padding: 2px 8px;
@@ -129,17 +129,17 @@ class LogPanel(QWidget):
                 color: #1E293B;
             }
             QTextEdit#logView {
-                background: #1E293B;
-                border: 1px solid #E2E8F0;
-                border-radius: 6px;
+                background: #0F172A;
+                border: 1px solid #1E293B;
+                border-radius: 8px;
                 color: #E2E8F0;
                 font-family: "Cascadia Code", "Consolas", "Noto Sans SC", monospace;
                 font-size: 11px;
-                padding: 8px 10px;
+                padding: 10px 12px;
                 selection-background-color: #334155;
             }
             QTextEdit#logView QScrollBar:vertical {
-                background: #1E293B;
+                background: #0F172A;
                 width: 6px;
                 margin: 0;
             }

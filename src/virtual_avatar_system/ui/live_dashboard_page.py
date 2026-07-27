@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from virtual_avatar_system.ui.log_panel import LogPanel
 
@@ -99,10 +99,17 @@ class LiveDashboardPage(QWidget):
 
         status_card = QFrame(self)
         status_card.setObjectName("dashboardCard")
+        status_card.setMinimumHeight(430)
         status_layout = QGridLayout(status_card)
-        status_layout.setContentsMargins(20, 18, 20, 18)
-        status_layout.setHorizontalSpacing(16)
-        status_layout.setVerticalSpacing(14)
+        status_layout.setContentsMargins(18, 16, 18, 18)
+        status_layout.setHorizontalSpacing(12)
+        status_layout.setVerticalSpacing(10)
+        status_layout.setRowMinimumHeight(0, 30)
+        status_layout.setRowMinimumHeight(1, 58)
+        status_layout.setRowMinimumHeight(2, 78)
+        status_layout.setRowMinimumHeight(3, 78)
+        status_layout.setRowMinimumHeight(4, 82)
+        status_layout.setRowMinimumHeight(5, 82)
 
         title = QLabel("实时状态", self)
         title.setObjectName("dashboardTitle")
@@ -116,13 +123,13 @@ class LiveDashboardPage(QWidget):
         self._emotion_value = self._create_value_label()
         self._motion_value = self._create_value_label()
 
-        self._add_status_row(status_layout, 1, "启动阶段", self._stage_value)
-        self._add_status_row(status_layout, 2, "摄像头", self._camera_value)
-        self._add_status_row(status_layout, 3, "麦克风", self._microphone_value)
-        self._add_status_row(status_layout, 4, "ASR 文本", self._asr_value)
-        self._add_status_row(status_layout, 5, "语义标签", self._semantic_value)
-        self._add_status_row(status_layout, 6, "情绪结果", self._emotion_value)
-        self._add_status_row(status_layout, 7, "当前动作", self._motion_value)
+        status_layout.addWidget(self._create_stage_box(), 1, 0, 1, 2)
+        status_layout.addWidget(self._create_status_tile("摄像头", self._camera_value), 2, 0)
+        status_layout.addWidget(self._create_status_tile("麦克风", self._microphone_value), 2, 1)
+        status_layout.addWidget(self._create_status_tile("情绪结果", self._emotion_value), 3, 0)
+        status_layout.addWidget(self._create_status_tile("当前动作", self._motion_value), 3, 1)
+        status_layout.addWidget(self._create_status_tile("ASR 文本", self._asr_value, wide=True), 4, 0, 1, 2)
+        status_layout.addWidget(self._create_status_tile("语义标签", self._semantic_value, wide=True), 5, 0, 1, 2)
 
         layout.addWidget(status_card)
         self._log_panel = LogPanel(self)
@@ -130,20 +137,43 @@ class LiveDashboardPage(QWidget):
         layout.addStretch()
         self._apply_styles()
 
-    def _add_status_row(self, layout: QGridLayout, row: int, label_text: str, value_label: QLabel) -> None:
-        """添加一行状态字段。"""
+    def _create_stage_box(self) -> QFrame:
+        """创建启动阶段状态条。"""
+        box = QFrame(self)
+        box.setObjectName("dashboardStageBox")
+        box.setMinimumHeight(58)
+        layout = QHBoxLayout(box)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+
+        label = QLabel("启动阶段", self)
+        label.setObjectName("dashboardLabel")
+        layout.addWidget(label)
+        layout.addWidget(self._stage_value, stretch=1)
+        return box
+
+    def _create_status_tile(self, label_text: str, value_label: QLabel, wide: bool = False) -> QFrame:
+        """创建一块状态信息区域。"""
+        tile = QFrame(self)
+        tile.setObjectName("dashboardWideTile" if wide else "dashboardTile")
+        tile.setMinimumHeight(82 if wide else 78)
+        layout = QVBoxLayout(tile)
+        layout.setContentsMargins(12, 9, 12, 10)
+        layout.setSpacing(4)
+
         label = QLabel(label_text, self)
         label.setObjectName("dashboardLabel")
-        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        layout.addWidget(label, row, 0)
-        layout.addWidget(value_label, row, 1)
+        label.setMinimumHeight(20)
+        layout.addWidget(label)
+        layout.addWidget(value_label)
+        return tile
 
     def _create_value_label(self) -> QLabel:
         """创建状态值标签。"""
         label = QLabel(self)
         label.setObjectName("dashboardValue")
         label.setWordWrap(True)
-        label.setMinimumHeight(28)
+        label.setMinimumHeight(34)
         label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         return label
 
@@ -153,8 +183,15 @@ class LiveDashboardPage(QWidget):
             """
             QFrame#dashboardCard {
                 background: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 8px;
+            }
+            QFrame#dashboardTile,
+            QFrame#dashboardWideTile,
+            QFrame#dashboardStageBox {
+                background: #F8FAFC;
                 border: 1px solid #E2E8F0;
-                border-radius: 12px;
+                border-radius: 8px;
             }
             QLabel#dashboardTitle {
                 color: #0F172A;
@@ -163,9 +200,8 @@ class LiveDashboardPage(QWidget):
             }
             QLabel#dashboardLabel {
                 color: #64748B;
-                font-size: 13px;
+                font-size: 12px;
                 font-weight: 600;
-                min-width: 72px;
             }
             QLabel#dashboardValue {
                 color: #0F172A;
