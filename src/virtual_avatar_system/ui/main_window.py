@@ -1,62 +1,59 @@
 """主窗口模块。
 
 职责：
-- 托管设置页、状态展示区和开始/停止按钮
+- 托管设置页、顶部状态徽章和底部主操作按钮
 - 通过 LiveStateMachine 控制直播状态
-- 与 SystemTray、PreviewWindow 联动
-- 只负责 UI 交互，不包含任何业务逻辑
+- 与 SystemTray 联动
+- 只负责 UI 交互，不包含业务逻辑
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont, QFontDatabase
 from PySide6.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QLabel,
-    QStackedWidget,
-    QMessageBox,
     QApplication,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
 
 from virtual_avatar_system.config.app_config import AppConfig, save_config
-from virtual_avatar_system.ui.live_state_machine import LiveStateMachine, LiveState
+from virtual_avatar_system.ui.live_state_machine import LiveState, LiveStateMachine
 from virtual_avatar_system.ui.settings_page import SettingsPage
-from virtual_avatar_system.ui.preview_window import PreviewWindow
 from virtual_avatar_system.ui.system_tray import AppSystemTray
 
 LOGGER = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
-    """应用主窗口。
-
-    结构：
-    - 顶部：状态栏
-    - 中部：设置页（选项卡式）
-    - 底部：开始 / 停止按钮
-    """
+    """应用主窗口。"""
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self._config = config
         self._state_machine = LiveStateMachine()
-        self._preview_window: PreviewWindow | None = None
         self._system_tray: AppSystemTray | None = None
 
-        # 事件回调注册表，供外部接入业务逻辑
         self._on_start_callbacks: list[Callable[[], None]] = []
         self._on_stop_callbacks: list[Callable[[], None]] = []
 
+        self._configure_ui_font()
         self._setup_window()
         self._setup_ui()
         self._connect_state_machine()
+        self._on_state_changed(self._state_machine.current_state, self._state_machine.current_state)
 
     # ---- 回调注册 ----
 
@@ -80,10 +77,6 @@ class MainWindow(QMainWindow):
         """暴露当前配置。"""
         return self._config
 
-    def set_preview_window(self, preview: PreviewWindow) -> None:
-        """注入预览窗口实例。"""
-        self._preview_window = preview
-
     def set_system_tray(self, tray: AppSystemTray) -> None:
         """注入系统托盘实例。"""
         self._system_tray = tray
@@ -93,41 +86,218 @@ class MainWindow(QMainWindow):
     def _setup_window(self) -> None:
         """设置主窗口属性。"""
         self.setWindowTitle("虚拟形象智能驱动系统")
-        self.resize(600, 500)
-        self.setMinimumSize(480, 400)
+        self.resize(680, 660)
+        self.setMinimumSize(620, 620)
+        self.setMaximumWidth(720)
+
+    def _configure_ui_font(self) -> None:
+        """主动加载中文字体，避免部分 Qt 环境回退到缺字形字体。"""
+        fonts_dir = Path("C:/Windows/Fonts")
+        font_files = (
+            fonts_dir / "NotoSansSC-VF.ttf",
+            fonts_dir / "msyh.ttc",
+            fonts_dir / "simhei.ttf",
+            fonts_dir / "simsun.ttc",
+        )
+        loaded_families: list[str] = []
+        for font_file in font_files:
+            if not font_file.exists():
+                continue
+            font_id = QFontDatabase.addApplicationFont(str(font_file))
+            if font_id >= 0:
+                loaded_families.extend(QFontDatabase.applicationFontFamilies(font_id))
+
+        app = QApplication.instance()
+        if app is not None and loaded_families:
+            preferred = next(
+                (family for family in ("Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "SimHei") if family in loaded_families),
+                loaded_families[0],
+            )
+            app.setFont(QFont(preferred, 9))
 
     def _setup_ui(self) -> None:
         """构建主窗口内容。"""
         central = QWidget(self)
+        central.setObjectName("root")
         self.setCentralWidget(central)
+
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setContentsMargins(24, 24, 24, 20)
+        main_layout.setSpacing(16)
 
-        # ---- 状态栏 ----
-        self._status_label = QLabel("状态：未准备", self)
-        self._status_label.setStyleSheet("font-size: 14px; font-weight: bold;")
-        main_layout.addWidget(self._status_label)
+        main_layout.addWidget(self._build_header())
 
-        # ---- 设置页 ----
         self._settings_page = SettingsPage(self._config, self)
         self._settings_page.on_config_changed(self._on_config_changed)
+        self._settings_page.config_validity_changed.connect(self._on_config_validity_changed)
         main_layout.addWidget(self._settings_page, stretch=1)
 
-        # ---- 底部按钮 ----
-        button_layout = QHBoxLayout()
+        footer = QFrame(self)
+        footer.setObjectName("footer")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(0, 14, 0, 0)
+        footer_layout.addStretch()
 
-        self._start_button = QPushButton("开始直播", self)
-        self._start_button.setMinimumHeight(36)
-        self._start_button.clicked.connect(self._on_start_pressed)
-        button_layout.addWidget(self._start_button)
+        self._action_button = QPushButton("▶  开始直播", self)
+        self._action_button.setObjectName("primaryActionButton")
+        self._action_button.setMinimumSize(196, 46)
+        self._action_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._action_button.clicked.connect(self._on_action_pressed)
 
-        self._stop_button = QPushButton("停止直播", self)
-        self._stop_button.setMinimumHeight(36)
-        self._stop_button.setEnabled(False)
-        self._stop_button.clicked.connect(self._on_stop_pressed)
-        button_layout.addWidget(self._stop_button)
+        button_shadow = QGraphicsDropShadowEffect(self._action_button)
+        button_shadow.setBlurRadius(16)
+        button_shadow.setOffset(0, 4)
+        button_shadow.setColor(QColor(2, 132, 199, 64))
+        self._action_button.setGraphicsEffect(button_shadow)
 
-        main_layout.addLayout(button_layout)
+        footer_layout.addWidget(self._action_button)
+        footer_layout.addStretch()
+
+        main_layout.addWidget(footer)
+        self._apply_styles()
+
+    def _build_header(self) -> QFrame:
+        """创建顶部标题栏和状态徽章。"""
+        header = QFrame(self)
+        header.setObjectName("header")
+
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        brand_mark = QLabel("VA", self)
+        brand_mark.setObjectName("brandMark")
+        brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand_mark.setFixedSize(28, 28)
+        layout.addWidget(brand_mark)
+
+        title_label = QLabel("虚拟形象智能驱动系统", self)
+        title_label.setObjectName("titleLabel")
+        layout.addWidget(title_label)
+        layout.addStretch()
+
+        self._status_badge = QFrame(self)
+        self._status_badge.setObjectName("statusBadge")
+        self._status_badge.setProperty("status", "idle")
+        status_layout = QHBoxLayout(self._status_badge)
+        status_layout.setContentsMargins(14, 0, 16, 0)
+        status_layout.setSpacing(8)
+
+        self._status_dot = QLabel(self)
+        self._status_dot.setObjectName("statusDotIdle")
+        self._status_dot.setFixedSize(8, 8)
+        status_layout.addWidget(self._status_dot)
+
+        self._status_label = QLabel("未准备", self)
+        self._status_label.setObjectName("statusText")
+        status_layout.addWidget(self._status_label)
+        layout.addWidget(self._status_badge)
+
+        return header
+
+    def _apply_styles(self) -> None:
+        """集中设置主窗口视觉样式。"""
+        self.setStyleSheet(
+            """
+            QWidget#root {
+                background: #F8FAFC;
+                color: #0F172A;
+                font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+                font-size: 13px;
+            }
+            QLabel#brandMark {
+                background: #E0F2FE;
+                border: 1px solid #BAE6FD;
+                border-radius: 8px;
+                color: #0284C7;
+                font-size: 11px;
+                font-weight: 800;
+            }
+            QLabel#titleLabel {
+                color: #0F172A;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            QFrame#statusBadge {
+                background: #FEF2F2;
+                border: 1px solid #FECACA;
+                border-radius: 12px;
+                min-height: 28px;
+            }
+            QFrame#statusBadge[status="ready"],
+            QFrame#statusBadge[status="running"] {
+                background: #ECFDF5;
+                border: 1px solid #A7F3D0;
+            }
+            QFrame#statusBadge[status="preparing"],
+            QFrame#statusBadge[status="stopping"] {
+                background: #FFFBEB;
+                border: 1px solid #FDE68A;
+            }
+            QFrame#statusBadge[status="error"] {
+                background: #FEF2F2;
+                border: 1px solid #FCA5A5;
+            }
+            QLabel#statusText {
+                color: #EF4444;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QFrame#statusBadge[status="ready"] QLabel#statusText,
+            QFrame#statusBadge[status="running"] QLabel#statusText {
+                color: #10B981;
+            }
+            QFrame#statusBadge[status="preparing"] QLabel#statusText,
+            QFrame#statusBadge[status="stopping"] QLabel#statusText {
+                color: #D97706;
+            }
+            QLabel#statusDotIdle {
+                background: #EF4444;
+                border-radius: 4px;
+            }
+            QLabel#statusDotReady {
+                background: #10B981;
+                border-radius: 4px;
+            }
+            QLabel#statusDotPreparing {
+                background: #D97706;
+                border-radius: 4px;
+            }
+            QLabel#statusDotRunning {
+                background: #10B981;
+                border-radius: 4px;
+            }
+            QLabel#statusDotError {
+                background: #EF4444;
+                border-radius: 4px;
+            }
+            QPushButton#primaryActionButton {
+                background: #0284C7;
+                border: 0;
+                border-radius: 8px;
+                color: white;
+                font-size: 15px;
+                font-weight: 700;
+                padding: 0 24px;
+            }
+            QPushButton#primaryActionButton:hover {
+                background: #0369A1;
+            }
+            QPushButton#primaryActionButton:pressed {
+                background: #075985;
+            }
+            QPushButton#primaryActionButton:disabled {
+                background: #E2E8F0;
+                color: #64748b;
+            }
+            QPushButton#primaryActionButton[mode="stop"] {
+                background: #DC2626;
+            }
+            QPushButton#primaryActionButton[mode="stop"]:hover {
+                background: #B91C1C;
+            }
+            """
+        )
 
     # ---- 状态机联动 ----
 
@@ -136,21 +306,51 @@ class MainWindow(QMainWindow):
         self._state_machine.on_state_changed(self._on_state_changed)
 
     def _on_state_changed(self, old: LiveState, new: LiveState) -> None:
-        """状态变更时更新 UI 表达。"""
+        """状态变更时更新顶部徽章和主按钮。"""
+        is_config_valid = self._settings_page.is_config_valid()
         state_text_map = {
-            LiveState.IDLE: "状态：未准备",
-            LiveState.PREPARING: "状态：准备中…",
-            LiveState.RUNNING: "状态：运行中",
-            LiveState.STOPPING: "状态：停止中…",
-            LiveState.ERROR: f"状态：错误 - {self._state_machine.error_message}",
+            LiveState.IDLE: "已就绪" if is_config_valid else "未准备",
+            LiveState.PREPARING: "准备中",
+            LiveState.RUNNING: "运行中",
+            LiveState.STOPPING: "停止中",
+            LiveState.ERROR: f"错误：{self._state_machine.error_message}",
         }
-        self._status_label.setText(state_text_map.get(new, "状态：未知"))
+        dot_style_map = {
+            LiveState.IDLE: "statusDotReady" if is_config_valid else "statusDotIdle",
+            LiveState.PREPARING: "statusDotPreparing",
+            LiveState.RUNNING: "statusDotRunning",
+            LiveState.STOPPING: "statusDotPreparing",
+            LiveState.ERROR: "statusDotError",
+        }
+        badge_status_map = {
+            LiveState.IDLE: "ready" if is_config_valid else "idle",
+            LiveState.PREPARING: "preparing",
+            LiveState.RUNNING: "running",
+            LiveState.STOPPING: "stopping",
+            LiveState.ERROR: "error",
+        }
+        self._status_label.setText(state_text_map.get(new, "未知"))
+        self._status_badge.setProperty("status", badge_status_map.get(new, "idle"))
+        self._status_dot.setObjectName(dot_style_map.get(new, "statusDotIdle"))
+        self._status_badge.style().unpolish(self._status_badge)
+        self._status_badge.style().polish(self._status_badge)
+        self._status_dot.style().unpolish(self._status_dot)
+        self._status_dot.style().polish(self._status_dot)
 
-        # 更新按钮可用性
-        self._start_button.setEnabled(self._state_machine.can_start)
-        self._stop_button.setEnabled(self._state_machine.can_stop)
+        if new == LiveState.RUNNING:
+            self._set_action_button("■  停止直播", True, "stop")
+        elif new == LiveState.PREPARING:
+            self._set_action_button("准备中", False, "start")
+        elif new == LiveState.STOPPING:
+            self._set_action_button("停止中", False, "stop")
+        elif new == LiveState.ERROR:
+            self._set_action_button("▶  重试启动", True, "start")
+        else:
+            if is_config_valid:
+                self._set_action_button("▶  开始直播", self._state_machine.can_start, "start")
+            else:
+                self._set_action_button("请先配置参数", False, "start")
 
-        # 错误状态自动弹出提示
         if new == LiveState.ERROR:
             QMessageBox.critical(
                 self,
@@ -158,10 +358,31 @@ class MainWindow(QMainWindow):
                 self._state_machine.error_message or "发生未知错误",
             )
 
+    def _set_action_button(self, text: str, enabled: bool, mode: str) -> None:
+        """同步底部主按钮的文案、可用状态和视觉层级。"""
+        self._action_button.setText(text)
+        self._action_button.setEnabled(enabled)
+        self._action_button.setProperty("mode", mode)
+        self._action_button.style().unpolish(self._action_button)
+        self._action_button.style().polish(self._action_button)
+
     # ---- 按钮事件 ----
 
+    def _on_action_pressed(self) -> None:
+        """根据当前状态执行开始、停止或错误恢复。"""
+        state = self._state_machine.current_state
+        if state == LiveState.RUNNING:
+            self._on_stop_pressed()
+            return
+        if state == LiveState.ERROR:
+            self._state_machine.reset()
+        if not self._settings_page.is_config_valid():
+            return
+        if self._state_machine.can_start:
+            self._on_start_pressed()
+
     def _on_start_pressed(self) -> None:
-        """用户点击"开始直播"。"""
+        """用户点击开始直播。"""
         self._state_machine.start()
         for callback in self._on_start_callbacks:
             try:
@@ -171,7 +392,7 @@ class MainWindow(QMainWindow):
                 self._state_machine.on_error(str(exc))
 
     def _on_stop_pressed(self) -> None:
-        """用户点击"停止直播"。"""
+        """用户点击停止直播。"""
         self._state_machine.stop()
         for callback in self._on_stop_callbacks:
             try:
@@ -182,19 +403,19 @@ class MainWindow(QMainWindow):
     # ---- 配置变更 ----
 
     def _on_config_changed(self, config: AppConfig) -> None:
-        """设置页配置变更时持久化并同步预览窗口。"""
+        """设置页配置变更时持久化。"""
         save_config(config)
-        if self._preview_window:
-            self._preview_window.setVisible(config.preview_visible)
+        if self._state_machine.current_state == LiveState.IDLE:
+            self._on_state_changed(LiveState.IDLE, LiveState.IDLE)
+
+    def _on_config_validity_changed(self, _valid: bool) -> None:
+        """配置有效性变化时同步启动按钮和顶部状态。"""
+        if self._state_machine.current_state == LiveState.IDLE:
+            self._on_state_changed(LiveState.IDLE, LiveState.IDLE)
 
     # ---- 窗口关闭 ----
 
     def closeEvent(self, event) -> None:
         """关闭主窗口时直接退出应用。"""
-        # 关闭预览窗口
-        if self._preview_window:
-            self._preview_window.close()
-
-        # 触发应用退出，由 main.py 统一保存配置
         QApplication.quit()
         event.accept()

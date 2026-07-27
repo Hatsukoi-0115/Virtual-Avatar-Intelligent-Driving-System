@@ -10,14 +10,17 @@
   "speech_pause_threshold_ms": 1200,
   "debug_print_asr_text": false,
   "emotion_model_path": "models/hf_cache/Johnson8187__Chinese-Emotion-Small",
-  "model_path": "models/haru_ja/runtime/haru.model3.json",
+  "model_name": "haru_ja",
+  "model_paths": {
+    "haru_ja": "models/haru_ja/runtime/haru.model3.json"
+  },
   "llm_base_url": "",
   "llm_api_key": "",
   "llm_model": "",
   "preview_visible": false,
   "preview_width": 360,
   "preview_height": 640,
-  "preview_always_on_top": false,
+  "preview_always_on_top": true,
   "visual_feature_fps": 30,
   "asr_refresh_ms": 200,
   "llm_min_interval_ms": 5000

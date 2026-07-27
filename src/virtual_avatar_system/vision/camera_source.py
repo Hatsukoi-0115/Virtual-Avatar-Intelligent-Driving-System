@@ -18,6 +18,19 @@ import cv2
 LOGGER = logging.getLogger(__name__)
 
 
+def list_available_camera_indices(max_index: int = 6) -> list[int]:
+    """扫描本机可打开的摄像头索引。"""
+    available: list[int] = []
+    for index in range(max_index):
+        capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        try:
+            if capture.isOpened():
+                available.append(index)
+        finally:
+            capture.release()
+    return available
+
+
 @dataclass(slots=True)
 class CameraFramePacket:
     """摄像头帧数据包。"""

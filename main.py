@@ -3,7 +3,7 @@
 职责：
 - 初始化 QApplication
 - 加载配置
-- 创建主窗口、预览窗口、系统托盘
+- 创建主窗口、系统托盘
 - 连接开始/停止事件（后续接入 Avatar Controller）
 - 启动事件循环
 """
@@ -30,18 +30,18 @@ from virtual_avatar_system.utils.runtime_dependencies import ensure_ffmpeg_on_pa
 
 ensure_ffmpeg_on_path()
 
-from virtual_avatar_system.config.app_config import load_config, resolve_project_path, save_config
+from virtual_avatar_system.config.app_config import load_config, resolve_project_path, save_config, get_model_path
 from virtual_avatar_system.controller.avatar_controller import AvatarController, AvatarInputState
 from virtual_avatar_system.audio.live_speech_service import (
     LiveSpeechServiceConfig,
     LiveSpeechUnderstandingService,
 )
 from virtual_avatar_system.ui.main_window import MainWindow
-from virtual_avatar_system.ui.preview_window import PreviewWindow
 from virtual_avatar_system.ui.system_tray import AppSystemTray
 from virtual_avatar_system.renderer.live2d_renderer import Live2DRenderer
 from virtual_avatar_system.vision.camera_source import CameraFrameSource
 from virtual_avatar_system.vision.face_inference import FaceLandmarkInferencer
+from virtual_avatar_system.llm.semantic import get_idle_labels
 
 
 def _configure_logging() -> None:
@@ -67,12 +67,7 @@ def main() -> None:
     speech_service: LiveSpeechUnderstandingService | None = None
 
     # ---- 创建窗口 ----
-    preview = PreviewWindow()
-    if config.preview_visible:
-        preview.show()
-
     main_window = MainWindow(config)
-    main_window.set_preview_window(preview)
     main_window.show()
 
     # ---- 系统托盘 ----
@@ -82,7 +77,7 @@ def main() -> None:
     main_window.set_system_tray(tray)
 
     # ---- 融合层与渲染层 ----
-    avatar_controller = AvatarController()
+    avatar_controller = AvatarController(model_name=config.model_name)
     live2d_renderer = Live2DRenderer()
     # 当前情绪表情 ID，由语音链路回调更新，供视觉桥接定时器带入 AvatarInputState
     latest_expression = "Normal"
@@ -99,8 +94,8 @@ def main() -> None:
     def _on_semantic(label: str, confidence: float, summary: str) -> None:
         """LLM 语义理解回调：更新当前动作标签，下一帧渲染时生效。"""
         nonlocal latest_motion_label
-        # Idle 组三个待机动作不由 LLM 触发，仅用于面部丢失时随机选择
-        if label.startswith("idle_"):
+        # 待机动作不由 LLM 触发，仅用于面部丢失时随机选择
+        if label in _idle_labels:
             return
         if label != latest_motion_label:
             logger.info("动作标签：%s（置信度 %.2f，摘要：%s）", label, confidence, summary)
@@ -108,12 +103,8 @@ def main() -> None:
             avatar_controller.set_motion_from_label(label)
 
     # ---- 视觉链路：摄像头采集 + MediaPipe 推理 ----
-    camera_source = CameraFrameSource(
-        camera_index=config.camera_index,
-        width=config.camera_width,
-        height=config.camera_height,
-        fps=config.camera_fps,
-    )
+    # 摄像头采集器在点击“开始直播”时按最新配置创建，确保开播前修改参数立即生效。
+    camera_source: CameraFrameSource | None = None
     inferencer = FaceLandmarkInferencer()
 
     # 桥接定时器：摄像头帧 → 推理器
@@ -121,6 +112,8 @@ def main() -> None:
     feed_timer.setInterval(16)
 
     def _feed_frames() -> None:
+        if camera_source is None:
+            return
         for frame_packet in camera_source.pop_frames():
             if frame_packet.bgr_data:
                 inferencer.feed_frame(
@@ -138,7 +131,7 @@ def main() -> None:
     _IDLE_COOLDOWN = 3.0
     _last_idle_trigger_time = 0.0
     _face_was_detected = False
-    _idle_labels = ("idle_calm", "idle_relaxed", "idle_curious")
+    _idle_labels = get_idle_labels(config.model_name)
 
     def _consume_features() -> None:
         nonlocal latest_expression, _face_was_detected, _last_idle_trigger_time
@@ -168,10 +161,13 @@ def main() -> None:
 
     def _shutdown_runtime() -> None:
         """停止视觉采集、推理和渲染链路。"""
+        nonlocal camera_source
         feed_timer.stop()
         consume_timer.stop()
         inferencer.stop()
-        camera_source.stop()
+        if camera_source is not None:
+            camera_source.stop()
+            camera_source = None
         live2d_renderer.stop()
 
     # ---- 语音、情绪与 LLM 链路 ----
@@ -195,10 +191,24 @@ def main() -> None:
         - 中文分词后的情绪分类
         - 自然句结束后的 LLM 标签匹配
         """
-        nonlocal speech_service
+        nonlocal speech_service, camera_source
         logger.info("开始直播：启动视觉、渲染、语音/情绪/LLM 链路")
         try:
-            live2d_renderer.start(resolve_project_path(config.model_path))
+            current_config = main_window.config
+            camera_source = CameraFrameSource(
+                camera_index=current_config.camera_index,
+                width=current_config.camera_width,
+                height=current_config.camera_height,
+                fps=current_config.camera_fps,
+            )
+            logger.info(
+                "使用摄像头配置：camera=%s %sx%s@%sfps",
+                current_config.camera_index,
+                current_config.camera_width,
+                current_config.camera_height,
+                current_config.camera_fps,
+            )
+            live2d_renderer.start(resolve_project_path(get_model_path(main_window.config)))
             camera_source.start()
             inferencer.start()
             feed_timer.start()
@@ -249,7 +259,6 @@ def main() -> None:
         _shutdown_speech()
         _shutdown_runtime()
         save_config(main_window.config)
-        preview.close()
         main_window.close()
         app.quit()
 
