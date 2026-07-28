@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -26,8 +28,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from virtual_avatar_system.business.comment_advisor import analyze_audience_comment
+from virtual_avatar_system.business.comment_advisor import (
+    CommentAdvice,
+    CommentLLMConfig,
+    analyze_audience_comment,
+    analyze_audience_comment_with_llm,
+)
 from virtual_avatar_system.comments.bilibili_comment_source import BilibiliComment, BilibiliCommentSource
+from virtual_avatar_system.config.app_config import AppConfig, get_comment_prompt_text
 from virtual_avatar_system.ui.log_panel import LogPanel
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -40,13 +48,15 @@ class LiveDashboardSignal(QObject):
     update = Signal(str, str)
     bilibili_comment = Signal(str, str)
     bilibili_running = Signal(bool)
+    comment_advice = Signal(int, object, bool, bool)
 
 
 class LiveDashboardPage(QWidget):
     """直播期间的实时状态面板。"""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, config: AppConfig | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._config = config
         self._bilibili_source = BilibiliCommentSource()
         self._bilibili_source.on_comment(self._emit_bilibili_comment)
         self._bilibili_source.on_status(self.update_bilibili_comment_status)
@@ -56,10 +66,14 @@ class LiveDashboardPage(QWidget):
         self._signal.update.connect(self._apply_update, Qt.ConnectionType.QueuedConnection)
         self._signal.bilibili_comment.connect(self._on_bilibili_comment_received, Qt.ConnectionType.QueuedConnection)
         self._signal.bilibili_running.connect(self._apply_bilibili_running, Qt.ConnectionType.QueuedConnection)
+        self._signal.comment_advice.connect(self._apply_comment_advice_result, Qt.ConnectionType.QueuedConnection)
         self._on_audience_comment_callbacks: list[Callable[[str, str, str], None]] = []
         self._animation_index = 0
         self._dynamic_dot_labels: list[QLabel] = []
         self._wave_bars: list[QFrame] = []
+        self._comment_analysis_seq = 0
+        self._last_comment_llm_started_at = 0.0
+        self._comment_llm_min_interval_seconds = 2.0
         self._setup_ui()
         self._setup_live_animations()
         self.reset()
@@ -76,6 +90,7 @@ class LiveDashboardPage(QWidget):
         self.update_microphone_listening_status("等待监听")
         self.update_asr_text("等待输入")
         self.update_semantic_label("待识别")
+        self.update_comment_semantic_label("待识别")
         self.update_emotion_result("中性")
         self.update_current_action("Idle")
         self.update_recommended_reply("等待观众评论")
@@ -129,6 +144,10 @@ class LiveDashboardPage(QWidget):
         """更新语义标签。"""
         self._signal.update.emit("semantic", text or "待识别")
 
+    def update_comment_semantic_label(self, text: str) -> None:
+        """更新话术建议面板中的评论语义标签。"""
+        self._signal.update.emit("comment_semantic", text or "待识别")
+
     def update_emotion_result(self, text: str) -> None:
         """更新情绪结果。"""
         self._signal.update.emit("emotion", text or "中性")
@@ -151,6 +170,10 @@ class LiveDashboardPage(QWidget):
 
     def _apply_update(self, field: str, text: str) -> None:
         """在 UI 线程中应用状态更新。"""
+        if field == "comment_semantic":
+            self._update_semantic_tags(text)
+            return
+
         label_map = {
             "camera_connection": self._camera_connection_value,
             "face_detection": self._face_detection_value,
@@ -227,20 +250,88 @@ class LiveDashboardPage(QWidget):
         update_latest_comment: bool = True,
     ) -> None:
         """根据评论内容刷新语义标签和话术建议。"""
-        advice = analyze_audience_comment(comment)
-        # 当前最小版用规则模拟 LLM 语义理解，后续可替换为真实平台评论 + LLM 服务。
-        self.update_semantic_label(advice.semantic_label)
+        fallback = analyze_audience_comment(comment)
+        if update_latest_comment:
+            self._latest_comment_value.setText(fallback.audience_comment or "等待观众评论")
+        if not fallback.audience_comment:
+            self._publish_comment_advice(fallback, log_manual, False)
+            return
+
+        now = time.monotonic()
+        if now - self._last_comment_llm_started_at < self._comment_llm_min_interval_seconds:
+            self._publish_comment_advice(fallback, log_manual, False)
+            self.append_backend_log("[Comment] 评论过于密集，已使用本地规则快速兜底")
+            return
+
+        self._last_comment_llm_started_at = now
+        self._comment_analysis_seq += 1
+        sequence = self._comment_analysis_seq
+        self.update_comment_semantic_label("LLM 分析中")
+        self.update_recommended_reply("正在调用 LLM 生成推荐回复...")
+        self.update_explanation_focus("正在分析评论重点")
+        self.append_backend_log(f"[Comment] 启动独立 LLM 话术分析：{fallback.audience_comment}")
+
+        worker = threading.Thread(
+            target=self._run_comment_advice_worker,
+            args=(sequence, fallback.audience_comment, log_manual, update_latest_comment),
+            name="comment-llm-advisor",
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_comment_advice_worker(
+        self,
+        sequence: int,
+        comment: str,
+        log_manual: bool,
+        update_latest_comment: bool,
+    ) -> None:
+        """后台调用评论 LLM，避免影响 UI、ASR 语义分析和动作映射。"""
+        advice = analyze_audience_comment_with_llm(comment, self._build_comment_llm_config())
+        self._signal.comment_advice.emit(sequence, advice, log_manual, update_latest_comment)
+
+    def _apply_comment_advice_result(
+        self,
+        sequence: int,
+        advice: object,
+        log_manual: bool,
+        update_latest_comment: bool,
+    ) -> None:
+        """在 UI 线程应用评论话术结果，忽略过期评论。"""
+        if sequence != self._comment_analysis_seq or not isinstance(advice, CommentAdvice):
+            return
+        self._publish_comment_advice(advice, log_manual, update_latest_comment)
+
+    def _publish_comment_advice(self, advice: CommentAdvice, log_manual: bool, update_latest_comment: bool) -> None:
+        """刷新话术建议面板，并把最终评论分析结果交给报告模块。"""
+        self.update_comment_semantic_label(advice.semantic_label)
         self.update_recommended_reply(advice.recommended_reply)
         self.update_explanation_focus(advice.explanation_focus)
-        self._update_focus_tags(advice.explanation_focus)
-        self._update_semantic_tags(advice.semantic_label)
         if update_latest_comment:
             self._latest_comment_value.setText(advice.audience_comment or "等待观众评论")
         if log_manual and advice.audience_comment:
-            self.append_backend_log(f"[Comment] 观众评论={advice.audience_comment} 语义={advice.semantic_label}")
+            self.append_backend_log(f"[Comment] 观众评论={advice.audience_comment} 语义={advice.semantic_label} 来源={advice.source}")
+        if advice.error:
+            self.append_backend_log(f"[Comment] LLM 不可用，已规则兜底：{advice.error}")
         if advice.audience_comment:
             for callback in self._on_audience_comment_callbacks:
                 callback(advice.audience_comment, advice.semantic_label, advice.recommended_reply)
+
+    def _build_comment_llm_config(self) -> CommentLLMConfig:
+        """从应用配置构建独立评论 LLM 配置，不复用动作语义解释器实例。"""
+        if self._config is None:
+            return CommentLLMConfig()
+        return CommentLLMConfig(
+            base_url=self._config.llm_base_url,
+            api_key=self._config.llm_api_key,
+            model=self._config.llm_model,
+            prompt_mode=self._config.comment_prompt_mode,
+            prompt_text=get_comment_prompt_text(self._config),
+            live_content=self._config.comment_live_content,
+            host_persona=self._config.comment_host_persona,
+            answer_boundary=self._config.comment_answer_boundary,
+            custom_prompt=self._config.comment_custom_prompt,
+        )
 
     def _setup_ui(self) -> None:
         """构建运行状态页布局。"""

@@ -19,6 +19,7 @@ from typing import Callable
 from PySide6.QtCore import QSize, Signal, Qt
 from PySide6.QtGui import QColor, QIcon, QIntValidator, QPalette
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QStackedWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -37,6 +39,10 @@ from PySide6.QtWidgets import (
 from virtual_avatar_system.audio.source import list_available_microphone_devices
 from virtual_avatar_system.config.app_config import (
     AppConfig,
+    DEFAULT_COURSE_QA_PROMPT,
+    DEFAULT_ECOMMERCE_PROMPT,
+    get_comment_prompt_text,
+    normalize_comment_prompt_mode,
     project_relative_path,
     resolve_project_path,
 )
@@ -309,6 +315,7 @@ class SettingsPage(QWidget):
         self._settings_stack.addWidget(self._build_device_config_page())
         self._settings_stack.addWidget(self._build_avatar_model_page())
         self._settings_stack.addWidget(self._build_llm_config_page())
+        self._settings_stack.addWidget(self._build_prompt_config_page())
         outer_layout.addWidget(self._settings_stack, stretch=1)
         outer_layout.addStretch()
 
@@ -331,6 +338,7 @@ class SettingsPage(QWidget):
             ("camera.svg", "设备配置", "摄像头与麦克风设置"),
             ("user.svg", "人物模型配置", "3D模型与动作设置"),
             ("robot.svg", "LLM模型配置", "语言模型与对话设置"),
+            ("prompt.svg", "Prompt配置", "直播内容与主播人设"),
         )
         for index, (icon_name, title, description) in enumerate(nav_items):
             nav_item = SettingsNavItem(self._asset_icon(icon_name), title, description, self)
@@ -401,6 +409,17 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
         layout.addWidget(self._build_llm_card())
+        layout.addStretch()
+        return page
+
+    def _build_prompt_config_page(self) -> QWidget:
+        """创建观众评论 Prompt 配置页。"""
+        page = QWidget(self)
+        page.setObjectName("settingsPanelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_prompt_card())
         layout.addStretch()
         return page
 
@@ -718,6 +737,70 @@ class SettingsPage(QWidget):
 
         return card
 
+    def _build_prompt_card(self) -> QFrame:
+        """创建观众评论话术 Prompt 配置卡片。"""
+        card = self._create_card("promptCard")
+        layout = self._create_card_layout(card)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(12)
+
+        icon_badge = QFrame(self)
+        icon_badge.setObjectName("cardIconBadge")
+        icon_badge.setFixedSize(38, 38)
+        icon_layout = QVBoxLayout(icon_badge)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+
+        icon = QLabel(self)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setPixmap(self._asset_icon("prompt.svg").pixmap(QSize(20, 20)))
+        icon_layout.addWidget(icon)
+        header.addWidget(icon_badge)
+
+        title_group = QVBoxLayout()
+        title_group.setContentsMargins(0, 0, 0, 0)
+        title_group.setSpacing(3)
+        title = QLabel("Prompt配置", self)
+        title.setObjectName("cardTitle")
+        title_group.addWidget(title)
+        subtitle = QLabel("提前限定直播内容、主播人设和回答边界", self)
+        subtitle.setObjectName("cardDescription")
+        title_group.addWidget(subtitle)
+        header.addLayout(title_group, stretch=1)
+
+        self._prompt_mode_group = QButtonGroup(self)
+        self._prompt_mode_group.setExclusive(True)
+        self._prompt_mode_buttons: dict[str, QPushButton] = {}
+        for mode, text in (
+            ("course_qa", "课程答疑"),
+            ("ecommerce", "电商带货"),
+            ("custom", "自定义"),
+        ):
+            button = QPushButton(text, self)
+            button.setObjectName("promptModeButton")
+            button.setCheckable(True)
+            button.setFixedHeight(32)
+            button.clicked.connect(lambda _checked=False, value=mode: self._on_prompt_mode_button_clicked(value))
+            self._prompt_mode_group.addButton(button)
+            self._prompt_mode_buttons[mode] = button
+            header.addWidget(button)
+        layout.addLayout(header)
+
+        self._comment_prompt_edit = QTextEdit(self)
+        self._comment_prompt_edit.setObjectName("promptTextArea")
+        self._comment_prompt_edit.setPlaceholderText("请写清楚直播内容、主播人设、目标观众、回答边界和禁止偏离的话题。")
+        self._comment_prompt_edit.setMinimumHeight(330)
+        self._comment_prompt_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self._comment_prompt_edit, stretch=1)
+
+        prompt_hint = QLabel("该 Prompt 仅用于观众评论的话术建议，不影响 ASR 语义分析、表情和动作映射。", self)
+        prompt_hint.setObjectName("promptHint")
+        prompt_hint.setWordWrap(True)
+        layout.addWidget(prompt_hint)
+        return card
+
     def _create_card(self, object_name: str) -> QFrame:
         """创建统一卡片容器。"""
         card = QFrame(self)
@@ -912,7 +995,8 @@ class SettingsPage(QWidget):
             QFrame#cameraCard,
             QFrame#microphoneCard,
             QFrame#modelCard,
-            QFrame#llmCard {
+            QFrame#llmCard,
+            QFrame#promptCard {
                 background: #FFFFFF;
                 border: 1px solid #E5EAF2;
                 border-radius: 12px;
@@ -987,12 +1071,14 @@ class SettingsPage(QWidget):
             }
             QLineEdit#numberInput,
             QLineEdit#llmInput,
+            QTextEdit#promptTextArea,
             QFrame#unitInput,
             QComboBox#resolutionSelect,
             QComboBox#fpsSelect,
             QComboBox#cameraSelect,
             QComboBox#microphoneSelect,
-            QComboBox#sampleRateSelect {
+            QComboBox#sampleRateSelect,
+            QComboBox#promptModeSelect {
                 background: #FFFFFF;
                 border: 1px solid #DDE3EA;
                 border-radius: 6px;
@@ -1004,17 +1090,51 @@ class SettingsPage(QWidget):
             }
             QLineEdit#numberInput:focus,
             QLineEdit#llmInput:focus,
+            QTextEdit#promptTextArea:focus,
             QComboBox#resolutionSelect:focus,
             QComboBox#fpsSelect:focus,
             QComboBox#cameraSelect:focus,
             QComboBox#microphoneSelect:focus,
-            QComboBox#sampleRateSelect:focus {
+            QComboBox#sampleRateSelect:focus,
+            QComboBox#promptModeSelect:focus {
                 border: 1px solid #4096FF;
                 background: #FFFFFF;
             }
             QLineEdit#llmInput {
                 padding: 0 12px;
                 min-height: 46px;
+            }
+            QTextEdit#promptTextArea {
+                padding: 10px 12px;
+                selection-background-color: #BFDBFE;
+                line-height: 150%;
+                font-size: 14px;
+                color: #0F172A;
+            }
+            QLabel#promptHint {
+                color: #64748B;
+                font-size: 12px;
+                font-weight: 500;
+                padding: 2px 0 0 0;
+            }
+            QPushButton#promptModeButton {
+                background: #F8FAFC;
+                border: 1px solid #D6E2F0;
+                border-radius: 16px;
+                color: #475569;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 0 14px;
+            }
+            QPushButton#promptModeButton:hover {
+                background: #EEF6FF;
+                border-color: #9CCBFF;
+                color: #0F5FD7;
+            }
+            QPushButton#promptModeButton:checked {
+                background: #1677FF;
+                border: 1px solid #1677FF;
+                color: #FFFFFF;
             }
             QLineEdit#unitInputEdit {
                 background: transparent;
@@ -1034,7 +1154,8 @@ class SettingsPage(QWidget):
             QComboBox#resolutionSelect,
             QComboBox#cameraSelect,
             QComboBox#microphoneSelect,
-            QComboBox#sampleRateSelect {
+            QComboBox#sampleRateSelect,
+            QComboBox#promptModeSelect {
                 padding-left: 10px;
                 padding-right: 28px;
             }
@@ -1139,6 +1260,7 @@ class SettingsPage(QWidget):
         self._llm_base_url_edit.textChanged.connect(self._on_setting_changed)
         self._llm_api_key_edit.textChanged.connect(self._on_setting_changed)
         self._llm_model_edit.textChanged.connect(self._on_setting_changed)
+        self._comment_prompt_edit.textChanged.connect(self._on_prompt_text_changed)
         self.device_test_finished.connect(self._on_device_test_finished)
 
     # ---- 配置加载与保存 ----
@@ -1157,6 +1279,7 @@ class SettingsPage(QWidget):
             self._llm_base_url_edit,
             self._llm_api_key_edit,
             self._llm_model_edit,
+            self._comment_prompt_edit,
         )
         for widget in widgets:
             widget.blockSignals(True)
@@ -1172,6 +1295,9 @@ class SettingsPage(QWidget):
         self._llm_base_url_edit.setText(self._config.llm_base_url)
         self._llm_api_key_edit.setText(self._config.llm_api_key)
         self._llm_model_edit.setText(self._config.llm_model)
+        self._active_prompt_mode = normalize_comment_prompt_mode(self._config.comment_prompt_mode)
+        self._set_prompt_mode_button_state(self._active_prompt_mode)
+        self._comment_prompt_edit.setPlainText(get_comment_prompt_text(self._config))
 
         for widget in widgets:
             widget.blockSignals(False)
@@ -1573,6 +1699,63 @@ class SettingsPage(QWidget):
             combo_box.addItem(text)
             index = combo_box.findText(text)
         combo_box.setCurrentIndex(index)
+
+    def _on_prompt_mode_button_clicked(self, mode: str) -> None:
+        """切换 Prompt 页签，切换前先保存当前文本。"""
+        previous_mode = getattr(self, "_active_prompt_mode", normalize_comment_prompt_mode(self._config.comment_prompt_mode))
+        self._store_prompt_text(previous_mode, self._comment_prompt_edit.toPlainText())
+
+        self._active_prompt_mode = normalize_comment_prompt_mode(mode)
+        self._config.comment_prompt_mode = self._active_prompt_mode
+        self._set_prompt_mode_button_state(self._active_prompt_mode)
+
+        self._comment_prompt_edit.blockSignals(True)
+        self._comment_prompt_edit.setPlainText(self._get_prompt_text_for_mode(self._active_prompt_mode))
+        self._comment_prompt_edit.blockSignals(False)
+        self._notify_prompt_config_changed()
+
+    def _on_prompt_text_changed(self) -> None:
+        """保存当前 Prompt 文本，不重置设备连接测试结果。"""
+        mode = getattr(self, "_active_prompt_mode", normalize_comment_prompt_mode(self._config.comment_prompt_mode))
+        self._store_prompt_text(mode, self._comment_prompt_edit.toPlainText())
+        self._config.comment_prompt_mode = mode
+        self._notify_prompt_config_changed()
+
+    def _set_prompt_mode_button_state(self, mode: str) -> None:
+        """同步 Prompt 三段按钮选中态。"""
+        for button_mode, button in self._prompt_mode_buttons.items():
+            button.blockSignals(True)
+            button.setChecked(button_mode == mode)
+            button.blockSignals(False)
+
+    def _get_prompt_text_for_mode(self, mode: str) -> str:
+        """读取指定模式的完整 Prompt 文本。"""
+        normalized_mode = normalize_comment_prompt_mode(mode)
+        if normalized_mode == "ecommerce":
+            return self._config.comment_ecommerce_prompt or DEFAULT_ECOMMERCE_PROMPT
+        if normalized_mode == "custom":
+            return self._config.comment_custom_prompt
+        return self._config.comment_course_prompt or DEFAULT_COURSE_QA_PROMPT
+
+    def _store_prompt_text(self, mode: str, text: str) -> None:
+        """把当前编辑框内容保存到对应 Prompt 模板字段。"""
+        normalized_mode = normalize_comment_prompt_mode(mode)
+        cleaned = text.strip()
+        if normalized_mode == "ecommerce":
+            self._config.comment_ecommerce_prompt = cleaned
+            return
+        if normalized_mode == "custom":
+            self._config.comment_custom_prompt = cleaned
+            return
+        self._config.comment_course_prompt = cleaned
+
+    def _notify_prompt_config_changed(self) -> None:
+        """通知主窗口持久化 Prompt，但不改变设备预检状态。"""
+        for callback in self._on_config_changed_callbacks:
+            try:
+                callback(self._config)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.error("Prompt 配置变更回调异常：%s", exc)
 
     def _browse_model_file(self) -> None:
         """打开文件选择器并写入 Live2D 模型路径。"""
