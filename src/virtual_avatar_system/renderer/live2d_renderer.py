@@ -208,12 +208,18 @@ def _apply_avatar_output(
     Returns:
         (当前表情, 当前动作, 动作是否正在播放)
     """
-    # 动作中断：人脸重新检测到时立即停止待机动作，恢复实时驱动
-    if output.interrupt_motion and motion_playing:
+   # 动作中断：人脸重新检测到时立即停止待机动作，恢复实时驱动
+    # 不依赖 motion_playing 标志，因为该标志在 MOTION_MIN_DURATION 后会自动置 False，
+    # 但实际动作可能仍在播放（循环或时长超过最小持续时间）
+    if output.interrupt_motion and not model.IsMotionFinished():
         model.StopAllMotions()
         motion_playing = False
         last_motion = ("", 0)
         LOGGER.info("人脸重新检测到，打断待机动作")
+    elif output.interrupt_motion:
+        # 即使 IsMotionFinished 为 True，也重置状态，保持一致
+        motion_playing = False
+        last_motion = ("", 0)
 
     # 更新基础参数（头部姿态、眼部、嘴部）
     model.SetParameterValue("PARAM_ANGLE_X", output.param_angle_x)
