@@ -31,7 +31,9 @@ from PySide6.QtWidgets import (
 )
 
 from virtual_avatar_system.config.app_config import AppConfig, save_config, save_llm_env
+from virtual_avatar_system.reporting.live_report_generator import LiveReportSummary
 from virtual_avatar_system.ui.live_dashboard_page import LiveDashboardPage
+from virtual_avatar_system.ui.live_report_summary_page import LiveReportSummaryPage
 from virtual_avatar_system.ui.live_state_machine import LiveState, LiveStateMachine
 from virtual_avatar_system.ui.settings_page import SettingsPage
 from virtual_avatar_system.ui.system_tray import AppSystemTray
@@ -53,6 +55,7 @@ class MainWindow(QMainWindow):
         self._config = config
         self._state_machine = LiveStateMachine()
         self._system_tray: AppSystemTray | None = None
+        self._showing_report_summary = False
 
         self._on_start_callbacks: list[Callable[[], None]] = []
         self._on_stop_callbacks: list[Callable[[], None]] = []
@@ -98,17 +101,32 @@ class MainWindow(QMainWindow):
         self._live_dashboard.reset()
 
     def update_camera_status(self, text: str) -> None:
-        """更新直播页摄像头状态。"""
-        self._live_dashboard.update_camera_status(text)
+        """兼容旧接口：更新直播页人脸检测状态。"""
+        self.update_face_detection_status(text)
+
+    def update_camera_connection_status(self, text: str) -> None:
+        """更新直播页摄像头连接状态。"""
+        self._live_dashboard.update_camera_connection_status(text)
+
+    def update_face_detection_status(self, text: str) -> None:
+        """更新直播页人脸检测状态。"""
+        self._live_dashboard.update_face_detection_status(text)
 
     def update_startup_stage(self, text: str) -> None:
-        """更新直播页启动阶段。"""
-        self._live_dashboard.update_startup_stage(text)
+        """更新启动/停止加载页阶段。"""
         self._loading_stage_label.setText(text or "准备启动")
 
     def update_microphone_status(self, text: str) -> None:
-        """更新直播页麦克风状态。"""
-        self._live_dashboard.update_microphone_status(text)
+        """兼容旧接口：更新直播页监听状态。"""
+        self.update_microphone_listening_status(text)
+
+    def update_microphone_connection_status(self, text: str) -> None:
+        """更新直播页麦克风连接状态。"""
+        self._live_dashboard.update_microphone_connection_status(text)
+
+    def update_microphone_listening_status(self, text: str) -> None:
+        """更新直播页麦克风监听状态。"""
+        self._live_dashboard.update_microphone_listening_status(text)
 
     def update_asr_text(self, text: str) -> None:
         """更新直播页 ASR 文本。"""
@@ -125,6 +143,28 @@ class MainWindow(QMainWindow):
     def update_current_action(self, text: str) -> None:
         """更新直播页当前动作。"""
         self._live_dashboard.update_current_action(text)
+
+    def show_live_report_summary(self, summary: LiveReportSummary) -> None:
+        """停止直播后展示本次直播报告摘要。"""
+        self._showing_report_summary = True
+        self._report_summary_page.set_summary(summary)
+        self._apply_config_window_size()
+        self._content_stack.setCurrentWidget(self._report_summary_page)
+        self._status_label.setText("报告已生成")
+        self._status_badge.setProperty("status", "ready")
+        self._status_dot.setObjectName("statusDotReady")
+        self._status_badge.style().unpolish(self._status_badge)
+        self._status_badge.style().polish(self._status_badge)
+        self._status_dot.style().unpolish(self._status_dot)
+        self._status_dot.style().polish(self._status_dot)
+        self._set_action_button("返回主页", True, "start")
+
+    def return_to_home(self) -> None:
+        """从报告摘要页返回开播前配置页。"""
+        self._showing_report_summary = False
+        self._apply_config_window_size()
+        self._content_stack.setCurrentWidget(self._settings_page)
+        self._on_state_changed(self._state_machine.current_state, self._state_machine.current_state)
 
     # ---- UI 构建 ----
 
@@ -178,10 +218,12 @@ class MainWindow(QMainWindow):
 
         self._loading_page = self._build_loading_page()
         self._live_dashboard = LiveDashboardPage(self)
+        self._report_summary_page = LiveReportSummaryPage(self)
         self._content_stack = QStackedWidget(self)
         self._content_stack.addWidget(self._settings_page)
         self._content_stack.addWidget(self._loading_page)
         self._content_stack.addWidget(self._live_dashboard)
+        self._content_stack.addWidget(self._report_summary_page)
         main_layout.addWidget(self._content_stack, stretch=1)
 
         footer = QFrame(self)
@@ -483,6 +525,10 @@ class MainWindow(QMainWindow):
         elif new == LiveState.RUNNING:
             self._apply_config_window_size()
             self._content_stack.setCurrentWidget(self._live_dashboard)
+        elif self._showing_report_summary:
+            # 停播后保持报告摘要页，避免状态回到 IDLE 时立刻跳回配置页。
+            self._apply_config_window_size()
+            self._content_stack.setCurrentWidget(self._report_summary_page)
         else:
             self._apply_config_window_size()
             self._content_stack.setCurrentWidget(self._settings_page)
@@ -503,6 +549,8 @@ class MainWindow(QMainWindow):
             self._set_action_button("停止中", False, "stop")
         elif new == LiveState.ERROR:
             self._set_action_button("▶  重试启动", True, "start")
+        elif self._showing_report_summary:
+            self._set_action_button("返回主页", True, "start")
         else:
             if is_config_valid:
                 self._set_action_button("▶  开始直播", self._state_machine.can_start, "start")
@@ -528,6 +576,9 @@ class MainWindow(QMainWindow):
 
     def _on_action_pressed(self) -> None:
         """根据当前状态执行开始、停止或错误恢复。"""
+        if self._showing_report_summary:
+            self.return_to_home()
+            return
         state = self._state_machine.current_state
         if state == LiveState.RUNNING:
             self._on_stop_pressed()
@@ -541,6 +592,7 @@ class MainWindow(QMainWindow):
 
     def _on_start_pressed(self) -> None:
         """用户点击开始直播。"""
+        self._showing_report_summary = False
         self._state_machine.start()
         for callback in self._on_start_callbacks:
             try:

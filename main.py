@@ -43,6 +43,12 @@ from virtual_avatar_system.renderer.live2d_renderer import Live2DRenderer
 from virtual_avatar_system.vision.camera_source import CameraFrameSource
 from virtual_avatar_system.vision.face_inference import FaceLandmarkInferencer
 from virtual_avatar_system.llm.semantic import get_idle_labels
+from virtual_avatar_system.reporting.live_event_recorder import LiveEventRecorder
+from virtual_avatar_system.reporting.live_report_generator import (
+    build_live_report_summary,
+    build_suggested_reply,
+    save_live_report,
+)
 
 
 class UiLogHandler(logging.Handler):
@@ -115,6 +121,7 @@ def main() -> None:
     # ---- 融合层与渲染层 ----
     avatar_controller = AvatarController(model_name=config.model_name)
     live2d_renderer = Live2DRenderer()
+    event_recorder = LiveEventRecorder()
     # 当前情绪表情 ID，由语音链路回调更新，供视觉桥接定时器带入 AvatarInputState
     latest_expression = "Normal"
     # 当前动作标签，由 LLM 语义回调更新
@@ -123,6 +130,7 @@ def main() -> None:
     def _on_asr_text(text: str) -> None:
         """ASR 文本回调：刷新直播状态页的最近识别文本。"""
         main_window.update_asr_text(text)
+        event_recorder.record_asr_text(text)
 
     def _on_emotion(expression_id: str, confidence: float, emotion_label: str) -> None:
         """语音情绪分类回调：更新当前表情，下一帧渲染时生效。"""
@@ -131,6 +139,7 @@ def main() -> None:
             logger.info("表情切换：%s → %s（置信度 %.2f）", latest_expression, expression_id, confidence)
         latest_expression = expression_id
         main_window.update_emotion_result(emotion_label)
+        event_recorder.record_emotion(emotion_label)
 
     def _on_semantic(label: str, confidence: float, summary: str) -> None:
         """LLM 语义理解回调：更新当前动作标签，下一帧渲染时生效。"""
@@ -143,6 +152,9 @@ def main() -> None:
             latest_motion_label = label
             main_window.update_semantic_label(summary or label)
             main_window.update_current_action(label)
+            suggested_reply = build_suggested_reply(event_recorder.record.snapshot.asr_text, summary or label)
+            event_recorder.record_semantic(summary or label, suggested_reply)
+            event_recorder.record_motion(label)
             avatar_controller.set_motion_from_label(label)
 
     # ---- 视觉链路：摄像头采集 + MediaPipe 推理 ----
@@ -189,9 +201,10 @@ def main() -> None:
             idle_label = random.choice(_idle_labels)
             logger.info("面部丢失，触发随机 Idle 动作：%s", idle_label)
             main_window.update_current_action(idle_label)
+            event_recorder.record_motion(idle_label)
             avatar_controller.set_motion_from_label(idle_label)
         _face_was_detected = latest.face_detected
-        main_window.update_camera_status("已连接" if latest.face_detected else "未检测到人脸")
+        main_window.update_face_detection_status("检测到人脸" if latest.face_detected else "未检测到人脸")
         # 更新视觉特征和表情，保留动作信息
         avatar_controller._input.visual = latest
         avatar_controller._input.expression = latest_expression
@@ -248,10 +261,13 @@ def main() -> None:
         """
         nonlocal speech_service, camera_source
         logger.info("开始直播：启动视觉、渲染、语音/情绪/LLM 链路")
+        event_recorder.start_session()
         main_window.reset_live_dashboard()
         main_window.update_startup_stage("准备启动")
-        main_window.update_camera_status("连接中")
-        main_window.update_microphone_status("启动中")
+        main_window.update_camera_connection_status("连接中")
+        main_window.update_face_detection_status("等待检测")
+        main_window.update_microphone_connection_status("连接中")
+        main_window.update_microphone_listening_status("等待监听")
         _flush_ui_events()
         try:
             current_config = main_window.config
@@ -271,14 +287,14 @@ def main() -> None:
                 current_config.camera_fps,
             )
             # Live2D 窗口使用配置中的紧凑尺寸，减少透明窗口对其他应用的遮挡。
-            main_window.update_startup_stage("正在加载 Live2D 模型...")
+            main_window.update_startup_stage("正在加载模型和渲染人物...")
             _flush_ui_events()
             live2d_renderer.start(
                 resolve_project_path(get_model_path(main_window.config)),
                 window_size=(current_config.preview_width, current_config.preview_height),
                 always_on_top=current_config.preview_always_on_top,
             )
-            main_window.update_startup_stage("正在渲染人物...")
+            main_window.update_startup_stage("正在加载模型和渲染人物...")
             _flush_ui_events()
             render_ready_deadline = time.monotonic() + 15.0
             while not live2d_renderer.is_ready:
@@ -297,6 +313,8 @@ def main() -> None:
             main_window.update_startup_stage("打开摄像头")
             _flush_ui_events()
             camera_source.start()
+            main_window.update_camera_connection_status("已连接")
+            main_window.update_face_detection_status("检测中")
             main_window.update_startup_stage("启动 MediaPipe 人脸推理")
             _flush_ui_events()
             inferencer.start()
@@ -304,7 +322,6 @@ def main() -> None:
             _flush_ui_events()
             feed_timer.start()
             consume_timer.start()
-            main_window.update_camera_status("已连接")
             main_window.update_startup_stage("视觉链路已就绪")
             _flush_ui_events()
 
@@ -329,11 +346,13 @@ def main() -> None:
             main_window.update_startup_stage("启动麦克风监听")
             _flush_ui_events()
             speech_service.start()
-            main_window.update_microphone_status("正在监听")
+            main_window.update_microphone_connection_status("已连接")
+            main_window.update_microphone_listening_status("正在监听")
             main_window.update_startup_stage("直播运行中")
         except Exception as exc:  # noqa: BLE001
             logger.warning("语音/情绪/LLM 链路启动失败，仅保留视觉驱动：%s", exc)
-            main_window.update_microphone_status("启动失败")
+            main_window.update_microphone_connection_status("连接失败")
+            main_window.update_microphone_listening_status("未监听")
             main_window.update_startup_stage("语音链路启动失败，视觉链路运行中")
             speech_service = None
 
@@ -354,12 +373,24 @@ def main() -> None:
             _flush_ui_events()
 
         _update_stop_stage("正在停止直播...")
-        main_window.update_microphone_status("已停止")
-        main_window.update_camera_status("已停止")
+        main_window.update_microphone_connection_status("已停止")
+        main_window.update_microphone_listening_status("已停止")
+        main_window.update_camera_connection_status("已停止")
+        main_window.update_face_detection_status("已停止")
         _shutdown_speech(_update_stop_stage)
         _shutdown_runtime(_update_stop_stage)
+        session_record = event_recorder.stop_session()
+        report_path = save_live_report(session_record, PROJECT_ROOT / "reports")
+        report_summary = build_live_report_summary(session_record, report_path)
+        logger.info(
+            "直播事件记录已完成：时长 %.1f 秒，事件数 %d，报告：%s",
+            session_record.duration_seconds,
+            len(session_record.events),
+            report_path,
+        )
         _update_stop_stage("直播已停止")
         main_window.state_machine.on_stopped()
+        main_window.show_live_report_summary(report_summary)
 
     main_window.on_start(on_start)
     main_window.on_stop(on_stop)

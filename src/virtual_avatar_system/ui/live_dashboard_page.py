@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from virtual_avatar_system.ui.log_panel import LogPanel
 
@@ -31,9 +31,10 @@ class LiveDashboardPage(QWidget):
 
     def reset(self) -> None:
         """重置直播状态为等待启动。"""
-        self.update_startup_stage("等待启动")
-        self.update_camera_status("等待启动")
-        self.update_microphone_status("等待启动")
+        self.update_camera_connection_status("等待启动")
+        self.update_face_detection_status("等待检测")
+        self.update_microphone_connection_status("等待启动")
+        self.update_microphone_listening_status("等待监听")
         self.update_asr_text("等待输入")
         self.update_semantic_label("待识别")
         self.update_emotion_result("中性")
@@ -48,17 +49,32 @@ class LiveDashboardPage(QWidget):
         """清空后端输出日志。"""
         self._log_panel.clear()
 
-    def update_camera_status(self, text: str) -> None:
-        """更新摄像头状态。"""
-        self._signal.update.emit("camera", text)
+    def update_camera_connection_status(self, text: str) -> None:
+        """更新摄像头连接状态。"""
+        self._signal.update.emit("camera_connection", text)
 
     def update_startup_stage(self, text: str) -> None:
-        """更新启动阶段。"""
-        self._signal.update.emit("stage", text or "等待启动")
+        """兼容旧接口：运行页不再展示启动阶段。"""
+
+    def update_camera_status(self, text: str) -> None:
+        """兼容旧接口：按人脸检测状态展示。"""
+        self.update_face_detection_status(text)
+
+    def update_face_detection_status(self, text: str) -> None:
+        """更新摄像头人脸检测状态。"""
+        self._signal.update.emit("face_detection", text)
+
+    def update_microphone_connection_status(self, text: str) -> None:
+        """更新麦克风连接状态。"""
+        self._signal.update.emit("microphone_connection", text)
 
     def update_microphone_status(self, text: str) -> None:
-        """更新麦克风状态。"""
-        self._signal.update.emit("microphone", text)
+        """兼容旧接口：按监听状态展示。"""
+        self.update_microphone_listening_status(text)
+
+    def update_microphone_listening_status(self, text: str) -> None:
+        """更新麦克风监听状态。"""
+        self._signal.update.emit("microphone_listening", text)
 
     def update_asr_text(self, text: str) -> None:
         """更新 ASR 文本。"""
@@ -79,9 +95,10 @@ class LiveDashboardPage(QWidget):
     def _apply_update(self, field: str, text: str) -> None:
         """在 UI 线程中应用状态更新。"""
         label_map = {
-            "stage": self._stage_value,
-            "camera": self._camera_value,
-            "microphone": self._microphone_value,
+            "camera_connection": self._camera_connection_value,
+            "face_detection": self._face_detection_value,
+            "microphone_connection": self._microphone_connection_value,
+            "microphone_listening": self._microphone_listening_value,
             "asr": self._asr_value,
             "semantic": self._semantic_value,
             "emotion": self._emotion_value,
@@ -105,7 +122,7 @@ class LiveDashboardPage(QWidget):
         status_layout.setHorizontalSpacing(12)
         status_layout.setVerticalSpacing(10)
         status_layout.setRowMinimumHeight(0, 30)
-        status_layout.setRowMinimumHeight(1, 58)
+        status_layout.setRowMinimumHeight(1, 78)
         status_layout.setRowMinimumHeight(2, 78)
         status_layout.setRowMinimumHeight(3, 78)
         status_layout.setRowMinimumHeight(4, 82)
@@ -115,42 +132,29 @@ class LiveDashboardPage(QWidget):
         title.setObjectName("dashboardTitle")
         status_layout.addWidget(title, 0, 0, 1, 2)
 
-        self._camera_value = self._create_value_label()
-        self._stage_value = self._create_value_label()
-        self._microphone_value = self._create_value_label()
+        self._camera_connection_value = self._create_value_label()
+        self._face_detection_value = self._create_value_label()
+        self._microphone_connection_value = self._create_value_label()
+        self._microphone_listening_value = self._create_value_label()
         self._asr_value = self._create_value_label()
         self._semantic_value = self._create_value_label()
         self._emotion_value = self._create_value_label()
         self._motion_value = self._create_value_label()
 
-        status_layout.addWidget(self._create_stage_box(), 1, 0, 1, 2)
-        status_layout.addWidget(self._create_status_tile("摄像头", self._camera_value), 2, 0)
-        status_layout.addWidget(self._create_status_tile("麦克风", self._microphone_value), 2, 1)
-        status_layout.addWidget(self._create_status_tile("情绪结果", self._emotion_value), 3, 0)
-        status_layout.addWidget(self._create_status_tile("当前动作", self._motion_value), 3, 1)
-        status_layout.addWidget(self._create_status_tile("ASR 文本", self._asr_value, wide=True), 4, 0, 1, 2)
-        status_layout.addWidget(self._create_status_tile("语义标签", self._semantic_value, wide=True), 5, 0, 1, 2)
+        status_layout.addWidget(self._create_status_tile("摄像头连接", self._camera_connection_value), 1, 0)
+        status_layout.addWidget(self._create_status_tile("人脸检测", self._face_detection_value), 1, 1)
+        status_layout.addWidget(self._create_status_tile("麦克风连接", self._microphone_connection_value), 2, 0)
+        status_layout.addWidget(self._create_status_tile("监听状态", self._microphone_listening_value), 2, 1)
+        status_layout.addWidget(self._create_status_tile("FunASR文本识别", self._asr_value, wide=True), 3, 0, 1, 2)
+        status_layout.addWidget(self._create_status_tile("LLM语义标签", self._semantic_value, wide=True), 4, 0, 1, 2)
+        status_layout.addWidget(self._create_status_tile("情绪结果", self._emotion_value), 5, 0)
+        status_layout.addWidget(self._create_status_tile("当前动作", self._motion_value), 5, 1)
 
         layout.addWidget(status_card)
         self._log_panel = LogPanel(self)
         layout.addWidget(self._log_panel, stretch=1)
         layout.addStretch()
         self._apply_styles()
-
-    def _create_stage_box(self) -> QFrame:
-        """创建启动阶段状态条。"""
-        box = QFrame(self)
-        box.setObjectName("dashboardStageBox")
-        box.setMinimumHeight(58)
-        layout = QHBoxLayout(box)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(10)
-
-        label = QLabel("启动阶段", self)
-        label.setObjectName("dashboardLabel")
-        layout.addWidget(label)
-        layout.addWidget(self._stage_value, stretch=1)
-        return box
 
     def _create_status_tile(self, label_text: str, value_label: QLabel, wide: bool = False) -> QFrame:
         """创建一块状态信息区域。"""
@@ -187,8 +191,7 @@ class LiveDashboardPage(QWidget):
                 border-radius: 8px;
             }
             QFrame#dashboardTile,
-            QFrame#dashboardWideTile,
-            QFrame#dashboardStageBox {
+            QFrame#dashboardWideTile {
                 background: #F8FAFC;
                 border: 1px solid #E2E8F0;
                 border-radius: 8px;
