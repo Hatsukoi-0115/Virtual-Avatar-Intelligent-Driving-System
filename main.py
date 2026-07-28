@@ -18,38 +18,24 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 # 确保 src 目录在 Python 搜索路径中
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
-
-from virtual_avatar_system.utils.runtime_dependencies import ensure_ffmpeg_on_path
-
-ensure_ffmpeg_on_path()
-
-from virtual_avatar_system.config.app_config import load_config, resolve_project_path, save_config, get_model_path
-from virtual_avatar_system.controller.avatar_controller import AvatarController, AvatarInputState
-from virtual_avatar_system.audio.live_speech_service import (
-    LiveSpeechServiceConfig,
-    LiveSpeechUnderstandingService,
-)
-from virtual_avatar_system.ui.main_window import MainWindow
-from virtual_avatar_system.ui.system_tray import AppSystemTray
-from virtual_avatar_system.renderer.live2d_renderer import Live2DRenderer
-from virtual_avatar_system.vision.camera_source import CameraFrameSource
-from virtual_avatar_system.vision.face_inference import FaceLandmarkInferencer
-from virtual_avatar_system.llm.semantic import get_idle_labels
-from virtual_avatar_system.reporting.live_event_recorder import LiveEventRecorder
-from virtual_avatar_system.reporting.live_report_generator import (
-    build_live_report_summary,
-    build_suggested_reply,
-    save_live_report,
-)
-
 
 class UiLogHandler(logging.Handler):
     """将 logging 输出安全转发到 Qt 后端输出面板。"""
@@ -92,6 +78,163 @@ def _flush_ui_events() -> None:
         app.processEvents()
 
 
+class StartupSplash(QWidget):
+    """应用启动小窗口，用于 exe 启动阶段给用户明确反馈。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("虚拟形象智能驱动系统")
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedSize(460, 210)
+        self._setup_ui()
+        self._center_on_screen()
+
+    def update_stage(self, text: str) -> None:
+        """更新启动阶段提示并立即刷新界面。"""
+        self._stage_label.setText(text)
+        _flush_ui_events()
+
+    def _setup_ui(self) -> None:
+        """构建启动小窗口界面。"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(0)
+
+        card = QFrame(self)
+        card.setObjectName("startupCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(24, 22, 24, 20)
+        card_layout.setSpacing(14)
+
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(15, 23, 42, 48))
+        card.setGraphicsEffect(shadow)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+
+        badge = QLabel("VA", self)
+        badge.setObjectName("startupBadge")
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setFixedSize(44, 44)
+        header_row.addWidget(badge)
+
+        title_group = QVBoxLayout()
+        title_group.setContentsMargins(0, 0, 0, 0)
+        title_group.setSpacing(3)
+
+        title = QLabel("虚拟形象智能驱动系统", self)
+        title.setObjectName("startupTitle")
+        title_group.addWidget(title)
+
+        subtitle = QLabel("Virtual Avatar Intelligent Driving System", self)
+        subtitle.setObjectName("startupSubtitle")
+        title_group.addWidget(subtitle)
+        header_row.addLayout(title_group, stretch=1)
+        card_layout.addLayout(header_row)
+
+        status_box = QFrame(self)
+        status_box.setObjectName("startupStatusBox")
+        status_layout = QVBoxLayout(status_box)
+        status_layout.setContentsMargins(14, 11, 14, 12)
+        status_layout.setSpacing(8)
+
+        self._stage_label = QLabel("正在启动虚拟形象智能驱动系统...", self)
+        self._stage_label.setObjectName("startupStage")
+        self._stage_label.setWordWrap(True)
+        status_layout.addWidget(self._stage_label)
+
+        progress_bar = QProgressBar(self)
+        progress_bar.setObjectName("startupProgress")
+        # 不预估真实耗时，使用忙碌进度条表达程序仍在初始化。
+        progress_bar.setRange(0, 0)
+        progress_bar.setTextVisible(False)
+        progress_bar.setFixedHeight(6)
+        status_layout.addWidget(progress_bar)
+        card_layout.addWidget(status_box)
+
+        hint = QLabel("请稍候，正在准备桌面运行环境", self)
+        hint.setObjectName("startupHint")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(hint)
+
+        layout.addWidget(card)
+
+        self.setStyleSheet(
+            """
+            QFrame#startupCard {
+                background: #FFFFFF;
+                border: 1px solid #DCE7F3;
+                border-radius: 14px;
+            }
+            QLabel#startupBadge {
+                background: #EFF6FF;
+                border: 1px solid #BFDBFE;
+                border-radius: 10px;
+                color: #2563EB;
+                font-size: 16px;
+                font-weight: 800;
+            }
+            QFrame#startupStatusBox {
+                background: #F8FAFC;
+                border: 1px solid #E2E8F0;
+                border-radius: 10px;
+            }
+            QLabel {
+                border: 0;
+                background: transparent;
+            }
+            QLabel#startupTitle {
+                color: #0F172A;
+                font-size: 18px;
+                font-weight: 800;
+            }
+            QLabel#startupSubtitle {
+                color: #64748B;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QLabel#startupStage {
+                color: #2563EB;
+                font-size: 13px;
+                font-weight: 700;
+            }
+            QLabel#startupHint {
+                color: #64748B;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QProgressBar#startupProgress {
+                background: #E2E8F0;
+                border: 0;
+                border-radius: 3px;
+            }
+            QProgressBar#startupProgress::chunk {
+                background: #2563EB;
+                border-radius: 3px;
+            }
+            """
+        )
+
+    def _center_on_screen(self) -> None:
+        """把启动小窗口移动到当前屏幕中央。"""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        screen_geometry = screen.availableGeometry()
+        x = screen_geometry.center().x() - self.width() // 2
+        y = screen_geometry.center().y() - self.height() // 2
+        self.move(x, y)
+
+
 def main() -> None:
     """启动桌面应用骨架。"""
     _configure_logging()
@@ -102,23 +245,62 @@ def main() -> None:
     app.setApplicationName("Virtual Avatar Intelligent Driving System")
     app.setOrganizationName("VAIDS")
 
+    startup_splash = StartupSplash()
+    startup_splash.show()
+    startup_splash.update_stage("正在启动虚拟形象智能驱动系统...")
+
+    # ---- 延迟导入项目模块，让 exe 启动时尽早显示启动小窗口 ----
+    startup_splash.update_stage("正在检查运行环境...")
+    from virtual_avatar_system.utils.runtime_dependencies import ensure_ffmpeg_on_path
+
+    ensure_ffmpeg_on_path()
+
+    startup_splash.update_stage("正在加载核心模块...")
+    from virtual_avatar_system.audio.live_speech_service import (
+        LiveSpeechServiceConfig,
+        LiveSpeechUnderstandingService,
+    )
+    from virtual_avatar_system.config.app_config import (
+        get_model_path,
+        load_config,
+        resolve_project_path,
+        save_config,
+    )
+    from virtual_avatar_system.controller.avatar_controller import AvatarController, AvatarInputState
+    from virtual_avatar_system.llm.semantic import get_idle_labels
+    from virtual_avatar_system.renderer.live2d_renderer import Live2DRenderer
+    from virtual_avatar_system.reporting.live_event_recorder import LiveEventRecorder
+    from virtual_avatar_system.reporting.live_report_generator import (
+        build_live_report_summary,
+        build_suggested_reply,
+        save_live_report,
+    )
+    from virtual_avatar_system.ui.main_window import MainWindow
+    from virtual_avatar_system.ui.system_tray import AppSystemTray
+    from virtual_avatar_system.vision.camera_source import CameraFrameSource
+    from virtual_avatar_system.vision.face_inference import FaceLandmarkInferencer
+
     # ---- 加载配置 ----
+    startup_splash.update_stage("正在加载配置...")
     config = load_config()
     speech_service: LiveSpeechUnderstandingService | None = None
 
     # ---- 创建窗口 ----
+    startup_splash.update_stage("正在初始化主窗口...")
     main_window = MainWindow(config)
+    startup_splash.update_stage("正在接入后端日志...")
     ui_log_handler = _attach_ui_log_handler(main_window)
     logger.info("后端输出日志面板已连接")
-    main_window.show()
 
     # ---- 系统托盘 ----
+    startup_splash.update_stage("正在初始化系统托盘...")
     tray = AppSystemTray(main_window)
     tray.show()
 
     main_window.set_system_tray(tray)
 
     # ---- 融合层与渲染层 ----
+    startup_splash.update_stage("正在准备运行控制器...")
     avatar_controller = AvatarController(model_name=config.model_name)
     live2d_renderer = Live2DRenderer()
     event_recorder = LiveEventRecorder()
@@ -401,6 +583,11 @@ def main() -> None:
 
     main_window.on_start(on_start)
     main_window.on_stop(on_stop)
+
+    startup_splash.update_stage("启动完成，正在打开主窗口...")
+    main_window.show()
+    startup_splash.close()
+    startup_splash.deleteLater()
 
     # ---- 统一退出入口 ----
     def _quit_application() -> None:
