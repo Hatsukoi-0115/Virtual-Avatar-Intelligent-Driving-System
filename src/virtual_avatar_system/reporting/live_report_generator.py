@@ -2,7 +2,7 @@
 
 职责：
 - 汇总一次直播中的事件记录
-- 统计语义标签、情绪结果、问题数量和高频问题
+- 统计语义标签、情绪结果、观众评论数量和高频评论
 - 输出适合老师审查和演示的 Markdown 报告
 """
 
@@ -42,11 +42,11 @@ class LiveReportSummary:
     duration_text: str = "0 秒"
     event_count: int = 0
     asr_text_count: int = 0
-    question_count: int = 0
+    comment_count: int = 0
     semantic_distribution: list[tuple[str, int]] = field(default_factory=list)
     emotion_distribution: list[tuple[str, int]] = field(default_factory=list)
     action_distribution: list[tuple[str, int]] = field(default_factory=list)
-    high_frequency_questions: list[tuple[str, int]] = field(default_factory=list)
+    high_frequency_comments: list[tuple[str, int]] = field(default_factory=list)
     recommendations: list[str] = field(default_factory=list)
     report_path: str = ""
 
@@ -62,26 +62,26 @@ def save_live_report(record: LiveSessionRecord, reports_dir: Path) -> Path:
 
 def build_live_report_summary(record: LiveSessionRecord, report_path: Path | None = None) -> LiveReportSummary:
     """构建停播后摘要页需要的结构化数据。"""
-    asr_texts, question_texts, semantic_counter, emotion_counter, action_counter = _collect_report_data(record)
+    asr_texts, comment_texts, semantic_counter, emotion_counter, action_counter = _collect_report_data(record)
     recommendations = _build_recommendation_items(
         record,
         asr_texts,
-        question_texts,
+        comment_texts,
         semantic_counter,
         emotion_counter,
     )
-    question_counter = Counter(question_texts)
+    comment_counter = Counter(comment_texts)
     return LiveReportSummary(
         started_at_text=record.started_at_text or "未知",
         stopped_at_text=record.stopped_at_text or "未知",
         duration_text=_format_duration(record.duration_seconds),
         event_count=len(record.events),
         asr_text_count=len(asr_texts),
-        question_count=len(question_texts),
+        comment_count=len(comment_texts),
         semantic_distribution=semantic_counter.most_common(),
         emotion_distribution=emotion_counter.most_common(),
         action_distribution=action_counter.most_common(),
-        high_frequency_questions=question_counter.most_common(5),
+        high_frequency_comments=comment_counter.most_common(5),
         recommendations=recommendations,
         report_path=str(report_path) if report_path else "",
     )
@@ -89,7 +89,7 @@ def build_live_report_summary(record: LiveSessionRecord, report_path: Path | Non
 
 def generate_live_report(record: LiveSessionRecord) -> str:
     """根据直播事件生成 Markdown 报告。"""
-    asr_texts, question_texts, semantic_counter, emotion_counter, action_counter = _collect_report_data(record)
+    asr_texts, comment_texts, semantic_counter, emotion_counter, action_counter = _collect_report_data(record)
 
     lines = [
         "# 直播结束报告",
@@ -99,9 +99,9 @@ def generate_live_report(record: LiveSessionRecord) -> str:
         f"- 开始时间：{record.started_at_text or '未知'}",
         f"- 结束时间：{record.stopped_at_text or '未知'}",
         f"- 本次直播时长：{_format_duration(record.duration_seconds)}",
-        f"- 事件记录数量：{len(record.events)}",
+        f"- 系统工作记录数：{len(record.events)}",
         f"- FunASR 文本条数：{len(asr_texts)}",
-        f"- 识别到的用户问题数量：{len(question_texts)}",
+        f"- 观众评论数量：{len(comment_texts)}",
         "",
         "## 主要语义标签分布",
         "",
@@ -115,9 +115,9 @@ def generate_live_report(record: LiveSessionRecord) -> str:
         "",
         _format_counter(action_counter, "暂无动作变化记录"),
         "",
-        "## 高频问题",
+        "## 高频评论",
         "",
-        _format_questions(question_texts),
+        _format_comments(comment_texts),
         "",
         "## 关键事件明细",
         "",
@@ -125,7 +125,7 @@ def generate_live_report(record: LiveSessionRecord) -> str:
         "",
         "## 推荐改进点",
         "",
-        _format_recommendations(record, asr_texts, question_texts, semantic_counter, emotion_counter),
+        _format_recommendations(record, asr_texts, comment_texts, semantic_counter, emotion_counter),
         "",
     ]
     return "\n".join(lines)
@@ -160,7 +160,11 @@ def _collect_report_data(
 ) -> tuple[list[str], list[str], Counter[str], Counter[str], Counter[str]]:
     """收集报告和摘要页共用的统计数据。"""
     asr_texts = _unique_non_empty(event.asr_text for event in record.events if event.event_type == "asr")
-    question_texts = [text for text in asr_texts if _is_question(text)]
+    comment_texts = [
+        event.audience_comment.strip()
+        for event in record.events
+        if event.event_type == "comment" and event.audience_comment.strip()
+    ]
     semantic_counter = Counter(
         event.semantic_label for event in record.events if event.semantic_label and event.semantic_label != "待识别"
     )
@@ -170,7 +174,7 @@ def _collect_report_data(
     action_counter = Counter(
         event.current_action for event in record.events if event.current_action and event.current_action != "Idle"
     )
-    return asr_texts, question_texts, semantic_counter, emotion_counter, action_counter
+    return asr_texts, comment_texts, semantic_counter, emotion_counter, action_counter
 
 
 def _is_question(text: str) -> bool:
@@ -198,12 +202,12 @@ def _format_counter(counter: Counter[str], empty_text: str) -> str:
     return "\n".join(f"- {label}：{count} 次" for label, count in counter.most_common())
 
 
-def _format_questions(question_texts: list[str]) -> str:
-    """格式化问题列表。"""
-    if not question_texts:
-        return "- 暂未识别到明确问题"
-    counter = Counter(question_texts)
-    return "\n".join(f"- {question}（{count} 次）" for question, count in counter.most_common(5))
+def _format_comments(comment_texts: list[str]) -> str:
+    """格式化高频评论列表。"""
+    if not comment_texts:
+        return "- 暂未记录到观众评论"
+    counter = Counter(comment_texts)
+    return "\n".join(f"- {comment}（{count} 次）" for comment, count in counter.most_common(5))
 
 
 def _format_event_table(events: list[LiveEvent]) -> str:
@@ -212,14 +216,15 @@ def _format_event_table(events: list[LiveEvent]) -> str:
         return "暂无事件记录"
 
     rows = [
-        "| 类型 | FunASR 文本 | 情绪 | LLM 语义 | 当前动作 | 推荐回复 |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| 类型 | FunASR 文本 | 观众评论 | 情绪 | LLM 语义 | 当前动作 | 推荐回复 |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for event in events[-30:]:
         rows.append(
-            "| {event_type} | {asr} | {emotion} | {semantic} | {action} | {reply} |".format(
+            "| {event_type} | {asr} | {comment} | {emotion} | {semantic} | {action} | {reply} |".format(
                 event_type=_escape_table_text(event.event_type),
                 asr=_escape_table_text(event.asr_text),
+                comment=_escape_table_text(event.audience_comment),
                 emotion=_escape_table_text(event.emotion),
                 semantic=_escape_table_text(event.semantic_label),
                 action=_escape_table_text(event.current_action),
@@ -232,7 +237,7 @@ def _format_event_table(events: list[LiveEvent]) -> str:
 def _format_recommendations(
     record: LiveSessionRecord,
     asr_texts: list[str],
-    question_texts: list[str],
+    comment_texts: list[str],
     semantic_counter: Counter[str],
     emotion_counter: Counter[str],
 ) -> str:
@@ -242,7 +247,7 @@ def _format_recommendations(
         for item in _build_recommendation_items(
             record,
             asr_texts,
-            question_texts,
+            comment_texts,
             semantic_counter,
             emotion_counter,
         )
@@ -252,7 +257,7 @@ def _format_recommendations(
 def _build_recommendation_items(
     record: LiveSessionRecord,
     asr_texts: list[str],
-    question_texts: list[str],
+    comment_texts: list[str],
     semantic_counter: Counter[str],
     emotion_counter: Counter[str],
 ) -> list[str]:
@@ -260,8 +265,8 @@ def _build_recommendation_items(
     suggestions: list[str] = []
     if not asr_texts:
         suggestions.append("本次直播未记录到有效 FunASR 文本，建议检查麦克风输入和说话音量。")
-    if not question_texts:
-        suggestions.append("本次直播未识别到明确用户问题，后续可增加主动提问或互动引导。")
+    if not comment_texts:
+        suggestions.append("本次直播未记录到观众评论，后续可使用手动输入或接入 B站评论增强互动数据。")
     if len(semantic_counter) <= 1:
         suggestions.append("语义标签较集中，后续可补充更多业务场景话术，提高互动覆盖面。")
     if emotion_counter and emotion_counter.most_common(1)[0][0] in {"消极", "愤怒", "厌恶", "悲伤"}:

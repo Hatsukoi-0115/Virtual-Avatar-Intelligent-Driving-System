@@ -39,13 +39,13 @@ class LiveReportSummaryPage(QWidget):
         self._time_range_value.setText(f"{summary.started_at_text}  至  {summary.stopped_at_text}")
         self._event_count_value.setText(f"{summary.event_count} 条")
         self._asr_count_value.setText(f"{summary.asr_text_count} 条")
-        self._question_count_value.setText(f"{summary.question_count} 个")
+        self._comment_count_value.setText(f"{summary.comment_count} 条")
         self._report_path_value.setText(self._format_report_path(summary.report_path))
         self._report_path_value.setToolTip(summary.report_path)
         self._semantic_value.setText(self._format_distribution(summary.semantic_distribution, "暂无有效语义标签"))
         self._emotion_value.setText(self._format_distribution(summary.emotion_distribution, "暂无明显情绪变化"))
         self._action_value.setText(self._format_distribution(summary.action_distribution, "暂无动作变化记录"))
-        self._questions_value.setText(self._format_questions(summary.high_frequency_questions))
+        self._comments_value.setText(self._format_comments(summary.high_frequency_comments))
         self._recommendations_value.setText(self._format_recommendations(summary.recommendations))
 
     def _setup_ui(self) -> None:
@@ -79,9 +79,9 @@ class LiveReportSummaryPage(QWidget):
         metrics.setContentsMargins(0, 0, 0, 0)
         metrics.setHorizontalSpacing(12)
         metrics.setVerticalSpacing(12)
-        self._event_count_value = self._create_metric_card(metrics, "事件记录数量", 0, 0)
+        self._event_count_value = self._create_metric_card(metrics, "系统工作记录数", 0, 0)
         self._asr_count_value = self._create_metric_card(metrics, "FunASR 文本条数", 0, 1)
-        self._question_count_value = self._create_metric_card(metrics, "用户问题数量", 1, 0, column_span=2)
+        self._comment_count_value = self._create_metric_card(metrics, "观众评论数量", 1, 0, column_span=2)
         layout.addLayout(metrics)
 
         self._recommendations_value = self._create_recommendation_card(layout)
@@ -93,7 +93,7 @@ class LiveReportSummaryPage(QWidget):
         self._semantic_value = self._create_overview_card(overview, "LLM 语义标签分布", 0, 0)
         self._emotion_value = self._create_overview_card(overview, "情绪结果分布", 0, 1)
         self._action_value = self._create_overview_card(overview, "当前动作分布", 1, 0)
-        self._questions_value = self._create_overview_card(overview, "高频问题", 1, 1)
+        self._comments_value = self._create_overview_card(overview, "高频评论", 1, 1)
         layout.addLayout(overview)
 
         layout.addStretch()
@@ -247,11 +247,11 @@ class LiveReportSummaryPage(QWidget):
         return "\n".join(f"{label}：{count} 次" for label, count in items[:3])
 
     @staticmethod
-    def _format_questions(items: list[tuple[str, int]]) -> str:
-        """格式化高频问题摘要。"""
+    def _format_comments(items: list[tuple[str, int]]) -> str:
+        """格式化高频评论摘要。"""
         if not items:
-            return "暂未识别到明确问题"
-        return "\n".join(f"{question}（{count} 次）" for question, count in items[:3])
+            return "暂未记录到观众评论"
+        return "\n".join(f"{comment}（{count} 次）" for comment, count in items[:3])
 
     @staticmethod
     def _format_recommendations(items: list[str]) -> str:

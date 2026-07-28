@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
@@ -22,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from virtual_avatar_system.business.comment_advisor import analyze_audience_comment
+from virtual_avatar_system.comments.bilibili_comment_source import BilibiliComment, BilibiliCommentSource
 from virtual_avatar_system.ui.log_panel import LogPanel
 
 
@@ -29,6 +32,8 @@ class LiveDashboardSignal(QObject):
     """跨线程安全的状态更新信号。"""
 
     update = Signal(str, str)
+    bilibili_comment = Signal(str, str)
+    bilibili_running = Signal(bool)
 
 
 class LiveDashboardPage(QWidget):
@@ -36,10 +41,22 @@ class LiveDashboardPage(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._bilibili_source = BilibiliCommentSource()
+        self._bilibili_source.on_comment(self._emit_bilibili_comment)
+        self._bilibili_source.on_status(self.update_bilibili_comment_status)
+        self._bilibili_source.on_debug(self.append_backend_log)
+        self._bilibili_source.on_running_changed(self._signal_bilibili_running)
         self._signal = LiveDashboardSignal()
         self._signal.update.connect(self._apply_update, Qt.ConnectionType.QueuedConnection)
+        self._signal.bilibili_comment.connect(self._on_bilibili_comment_received, Qt.ConnectionType.QueuedConnection)
+        self._signal.bilibili_running.connect(self._apply_bilibili_running, Qt.ConnectionType.QueuedConnection)
+        self._on_audience_comment_callbacks: list[Callable[[str, str, str], None]] = []
         self._setup_ui()
         self.reset()
+
+    def on_audience_comment(self, callback: Callable[[str, str, str], None]) -> None:
+        """注册观众评论分析结果回调。"""
+        self._on_audience_comment_callbacks.append(callback)
 
     def reset(self) -> None:
         """重置直播状态为等待启动。"""
@@ -53,6 +70,9 @@ class LiveDashboardPage(QWidget):
         self.update_current_action("Idle")
         self.update_recommended_reply("等待观众评论")
         self.update_explanation_focus("等待评论输入")
+        self.update_bilibili_comment_status("未接入")
+        self._bilibili_source.stop()
+        self._bilibili_room_input.clear()
         self._audience_comment_input.clear()
         self.clear_backend_log()
 
@@ -115,6 +135,10 @@ class LiveDashboardPage(QWidget):
         """更新推荐讲解重点。"""
         self._signal.update.emit("explanation_focus", text or "等待评论输入")
 
+    def update_bilibili_comment_status(self, text: str) -> None:
+        """更新 B站评论接入状态。"""
+        self._signal.update.emit("bilibili_status", text or "未接入")
+
     def _apply_update(self, field: str, text: str) -> None:
         """在 UI 线程中应用状态更新。"""
         label_map = {
@@ -128,22 +152,73 @@ class LiveDashboardPage(QWidget):
             "motion": self._motion_value,
             "recommended_reply": self._recommended_reply_value,
             "explanation_focus": self._explanation_focus_value,
+            "bilibili_status": self._bilibili_status_value,
         }
         target = label_map.get(field)
         if target is not None:
             target.setText(text)
 
+    def _on_prepare_bilibili_comment(self) -> None:
+        """连接或断开 B站直播评论。"""
+        if self._bilibili_source.is_running:
+            self._bilibili_source.stop()
+            return
+
+        room_id = self._bilibili_room_input.text().strip()
+        if not room_id:
+            self.update_bilibili_comment_status("请先输入直播间号")
+            return
+        if not room_id.isdigit():
+            self.update_bilibili_comment_status("直播间号应为数字")
+            return
+        self.update_bilibili_comment_status("正在连接 B站评论")
+        self.append_backend_log(f"[Bilibili] 开始连接直播间：{room_id}")
+        self._bilibili_source.start(int(room_id))
+
+    def _emit_bilibili_comment(self, comment: BilibiliComment) -> None:
+        """从后台线程把 B站评论投递到 UI 线程。"""
+        self._signal.bilibili_comment.emit(comment.user_name, comment.text)
+
+    def _signal_bilibili_running(self, running: bool) -> None:
+        """从后台线程把连接状态投递到 UI 线程。"""
+        self._signal.bilibili_running.emit(running)
+
+    def _apply_bilibili_running(self, running: bool) -> None:
+        """同步 B站连接按钮状态。"""
+        self._bilibili_connect_button.setText("断开" if running else "连接B站")
+        self._bilibili_room_input.setEnabled(not running)
+
+    def _on_bilibili_comment_received(self, user_name: str, text: str) -> None:
+        """收到 B站评论后自动刷新话术建议。"""
+        display_text = f"{user_name}：{text}"
+        self._latest_comment_value.setText(display_text)
+        self._apply_comment_advice(text, log_manual=False, update_latest_comment=False)
+        self.append_backend_log(f"[Bilibili] {display_text}")
+
     def _on_analyze_comment(self) -> None:
         """分析观众评论并刷新话术建议面板。"""
         comment = self._audience_comment_input.text()
+        self._apply_comment_advice(comment)
+
+    def _apply_comment_advice(
+        self,
+        comment: str,
+        log_manual: bool = True,
+        update_latest_comment: bool = True,
+    ) -> None:
+        """根据评论内容刷新语义标签和话术建议。"""
         advice = analyze_audience_comment(comment)
         # 当前最小版用规则模拟 LLM 语义理解，后续可替换为真实平台评论 + LLM 服务。
         self.update_semantic_label(advice.semantic_label)
         self.update_recommended_reply(advice.recommended_reply)
         self.update_explanation_focus(advice.explanation_focus)
-        self._latest_comment_value.setText(advice.audience_comment or "等待观众评论")
-        if advice.audience_comment:
+        if update_latest_comment:
+            self._latest_comment_value.setText(advice.audience_comment or "等待观众评论")
+        if log_manual and advice.audience_comment:
             self.append_backend_log(f"[Comment] 观众评论={advice.audience_comment} 语义={advice.semantic_label}")
+        if advice.audience_comment:
+            for callback in self._on_audience_comment_callbacks:
+                callback(advice.audience_comment, advice.semantic_label, advice.recommended_reply)
 
     def _setup_ui(self) -> None:
         """构建运行状态页布局。"""
@@ -282,22 +357,27 @@ class LiveDashboardPage(QWidget):
         title.setObjectName("dashboardTitle")
         layout.addWidget(title)
 
-        input_row = QHBoxLayout()
-        input_row.setContentsMargins(0, 0, 0, 0)
-        input_row.setSpacing(10)
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 0, 0, 0)
+        mode_row.setSpacing(8)
+        self._advice_mode_buttons: list[QPushButton] = []
+        for index, text in enumerate(("手动输入", "自动输入")):
+            button = QPushButton(text, self)
+            button.setObjectName("adviceModeButton")
+            button.setCheckable(True)
+            button.setFixedHeight(34)
+            button.clicked.connect(lambda _checked=False, page_index=index: self._set_advice_input_mode(page_index))
+            mode_row.addWidget(button)
+            self._advice_mode_buttons.append(button)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
 
-        self._audience_comment_input = QLineEdit(self)
-        self._audience_comment_input.setObjectName("audienceCommentInput")
-        self._audience_comment_input.setPlaceholderText("输入观众评论，例如：这个适合学生用吗？")
-        self._audience_comment_input.returnPressed.connect(self._on_analyze_comment)
-        input_row.addWidget(self._audience_comment_input, stretch=1)
-
-        analyze_button = QPushButton("分析评论", self)
-        analyze_button.setObjectName("analyzeCommentButton")
-        analyze_button.setFixedSize(96, 36)
-        analyze_button.clicked.connect(self._on_analyze_comment)
-        input_row.addWidget(analyze_button)
-        layout.addLayout(input_row)
+        self._advice_input_stack = QStackedWidget(self)
+        self._advice_input_stack.setObjectName("adviceInputStack")
+        self._advice_input_stack.addWidget(self._build_manual_comment_input_panel())
+        self._advice_input_stack.addWidget(self._build_auto_comment_input_panel())
+        layout.addWidget(self._advice_input_stack)
+        self._set_advice_input_mode(0)
 
         self._latest_comment_value = self._create_value_label()
         self._latest_comment_value.setText("等待观众评论")
@@ -314,6 +394,70 @@ class LiveDashboardPage(QWidget):
         layout.addLayout(advice_grid)
         layout.addStretch()
         return card
+
+    def _build_auto_comment_input_panel(self) -> QWidget:
+        """创建自动输入面板，负责接入 B站评论。"""
+        panel = QWidget(self)
+        panel.setObjectName("adviceInputPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        bilibili_row = QHBoxLayout()
+        bilibili_row.setContentsMargins(0, 0, 0, 0)
+        bilibili_row.setSpacing(10)
+        self._bilibili_room_input = QLineEdit(self)
+        self._bilibili_room_input.setObjectName("bilibiliRoomInput")
+        self._bilibili_room_input.setPlaceholderText("输入 B站直播间号")
+        self._bilibili_room_input.returnPressed.connect(self._on_prepare_bilibili_comment)
+        bilibili_row.addWidget(self._bilibili_room_input, stretch=1)
+
+        self._bilibili_connect_button = QPushButton("连接B站", self)
+        self._bilibili_connect_button.setObjectName("prepareBilibiliButton")
+        self._bilibili_connect_button.setFixedSize(96, 36)
+        self._bilibili_connect_button.clicked.connect(self._on_prepare_bilibili_comment)
+        bilibili_row.addWidget(self._bilibili_connect_button)
+        layout.addLayout(bilibili_row)
+
+        self._bilibili_status_value = self._create_value_label()
+        self._bilibili_status_value.setText("未接入")
+        layout.addWidget(self._create_status_tile("B站评论接入状态", self._bilibili_status_value, wide=True))
+        return panel
+
+    def _build_manual_comment_input_panel(self) -> QWidget:
+        """创建手动输入面板，负责人工输入评论并触发分析。"""
+        panel = QWidget(self)
+        panel.setObjectName("adviceInputPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        input_row = QHBoxLayout()
+        input_row.setContentsMargins(0, 0, 0, 0)
+        input_row.setSpacing(10)
+
+        self._audience_comment_input = QLineEdit(self)
+        self._audience_comment_input.setObjectName("audienceCommentInput")
+        self._audience_comment_input.setPlaceholderText("输入观众评论，例如：这个适合学生用吗？")
+        self._audience_comment_input.returnPressed.connect(self._on_analyze_comment)
+        input_row.addWidget(self._audience_comment_input, stretch=1)
+
+        analyze_button = QPushButton("分析评论", self)
+        analyze_button.setObjectName("analyzeCommentButton")
+        analyze_button.setFixedSize(96, 36)
+        analyze_button.clicked.connect(self._on_analyze_comment)
+        input_row.addWidget(analyze_button)
+        layout.addLayout(input_row)
+        return panel
+
+    def _set_advice_input_mode(self, index: int) -> None:
+        """切换话术建议的评论输入来源。"""
+        self._advice_input_stack.setCurrentIndex(index)
+        for button_index, button in enumerate(self._advice_mode_buttons):
+            active = button_index == index
+            button.setChecked(active)
+            button.setProperty("active", active)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def _create_status_tile(self, label_text: str, value_label: QLabel, wide: bool = False) -> QFrame:
         """创建一块状态信息区域。"""
@@ -355,6 +499,8 @@ class LiveDashboardPage(QWidget):
                 border-radius: 8px;
             }
             QStackedWidget#dashboardContentStack,
+            QStackedWidget#adviceInputStack,
+            QWidget#adviceInputPanel,
             QWidget#dashboardPanelPage {
                 background: transparent;
                 border: 0;
@@ -408,6 +554,24 @@ class LiveDashboardPage(QWidget):
                 background: #EFF6FF;
                 color: #2563EB;
             }
+            QPushButton#adviceModeButton {
+                background: #F8FAFC;
+                border: 1px solid #E2E8F0;
+                border-radius: 8px;
+                color: #475569;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 0 18px;
+            }
+            QPushButton#adviceModeButton:hover {
+                background: #F1F5F9;
+                color: #0F172A;
+            }
+            QPushButton#adviceModeButton[active="true"] {
+                background: #EFF6FF;
+                border: 1px solid #BFDBFE;
+                color: #2563EB;
+            }
             QLineEdit#audienceCommentInput {
                 background: #FFFFFF;
                 border: 1px solid #CBD5E1;
@@ -419,6 +583,29 @@ class LiveDashboardPage(QWidget):
             }
             QLineEdit#audienceCommentInput:focus {
                 border: 1px solid #2563EB;
+            }
+            QLineEdit#bilibiliRoomInput {
+                background: #FFFFFF;
+                border: 1px solid #CBD5E1;
+                border-radius: 8px;
+                color: #0F172A;
+                font-size: 13px;
+                min-height: 34px;
+                padding: 0 12px;
+            }
+            QLineEdit#bilibiliRoomInput:focus {
+                border: 1px solid #2563EB;
+            }
+            QPushButton#prepareBilibiliButton {
+                background: #0EA5E9;
+                border: 0;
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-size: 13px;
+                font-weight: 700;
+            }
+            QPushButton#prepareBilibiliButton:hover {
+                background: #0284C7;
             }
             QPushButton#analyzeCommentButton {
                 background: #2563EB;

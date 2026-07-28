@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Literal
 
 
-EventType = Literal["asr", "emotion", "semantic", "motion", "reply"]
+EventType = Literal["asr", "emotion", "semantic", "motion", "reply", "comment"]
 
 
 @dataclass(slots=True)
@@ -28,6 +28,7 @@ class LiveEvent:
     semantic_label: str = ""
     current_action: str = ""
     suggested_reply: str = ""
+    audience_comment: str = ""
 
 
 @dataclass(slots=True)
@@ -39,6 +40,7 @@ class LiveSessionSnapshot:
     semantic_label: str = "待识别"
     current_action: str = "Idle"
     suggested_reply: str = ""
+    audience_comment: str = ""
 
 
 @dataclass(slots=True)
@@ -117,6 +119,21 @@ class LiveEventRecorder:
         self._record.snapshot.suggested_reply = normalized_reply
         self._append_event("semantic")
 
+    def record_audience_comment(self, comment: str, semantic_label: str = "", suggested_reply: str = "") -> None:
+        """记录观众评论事件，用于直播结束报告统计。"""
+        normalized_comment = comment.strip()
+        if not normalized_comment:
+            return
+        normalized_label = semantic_label.strip()
+        normalized_reply = suggested_reply.strip()
+        self._record.snapshot.audience_comment = normalized_comment
+        if normalized_label:
+            self._record.snapshot.semantic_label = normalized_label
+        if normalized_reply:
+            self._record.snapshot.suggested_reply = normalized_reply
+        # 评论事件每次都记录，避免相同评论重复出现时被错误合并。
+        self._append_event("comment")
+
     def record_motion(self, motion_label: str) -> None:
         """记录当前动作事件。"""
         normalized = motion_label.strip() or "Idle"
@@ -137,6 +154,7 @@ class LiveEventRecorder:
                 semantic_label=snapshot.semantic_label,
                 current_action=snapshot.current_action,
                 suggested_reply=snapshot.suggested_reply,
+                audience_comment=snapshot.audience_comment,
             )
         )
 

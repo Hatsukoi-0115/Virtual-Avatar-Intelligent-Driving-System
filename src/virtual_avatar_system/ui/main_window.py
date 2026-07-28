@@ -76,6 +76,10 @@ class MainWindow(QMainWindow):
         """注册停止直播回调。"""
         self._on_stop_callbacks.append(callback)
 
+    def on_audience_comment(self, callback: Callable[[str, str, str], None]) -> None:
+        """注册观众评论分析结果回调。"""
+        self._live_dashboard.on_audience_comment(callback)
+
     # ---- 公共访问 ----
 
     @property

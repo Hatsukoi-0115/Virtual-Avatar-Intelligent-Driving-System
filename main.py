@@ -122,6 +122,13 @@ def main() -> None:
     avatar_controller = AvatarController(model_name=config.model_name)
     live2d_renderer = Live2DRenderer()
     event_recorder = LiveEventRecorder()
+
+    def _on_audience_comment(comment: str, semantic_label: str, suggested_reply: str) -> None:
+        """观众评论回调：沉淀评论内容、语义标签和推荐回复。"""
+        event_recorder.record_audience_comment(comment, semantic_label, suggested_reply)
+
+    main_window.on_audience_comment(_on_audience_comment)
+
     # 当前情绪表情 ID，由语音链路回调更新，供视觉桥接定时器带入 AvatarInputState
     latest_expression = "Normal"
     # 当前动作标签，由 LLM 语义回调更新
