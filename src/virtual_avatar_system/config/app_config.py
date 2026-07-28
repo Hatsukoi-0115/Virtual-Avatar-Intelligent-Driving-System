@@ -44,6 +44,7 @@ class AppConfig:
 
     # ---- 轻量实时变声器 ----
     voice_changer_enabled: bool = False
+    voice_demo_monitor_enabled: bool = False
     voice_output_device_index: int | None = None
     voice_output_sample_rate: int = 48000
     voice_pitch_semitones: int = 4

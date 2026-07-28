@@ -55,6 +55,7 @@ class LiveSpeechServiceConfig:
             ),
             voice_changer=VoiceChangerConfig(
                 enabled=app_config.voice_changer_enabled,
+                demo_monitor_enabled=app_config.voice_demo_monitor_enabled,
                 output_device_index=app_config.voice_output_device_index,
                 output_sample_rate=app_config.voice_output_sample_rate,
                 block_size=app_config.mic_block_size,
@@ -345,19 +346,20 @@ class LiveSpeechUnderstandingService:
         """格式化变声器状态，供 UI 展示。"""
         if not self.config.voice_changer.enabled:
             return "未启用"
+        if self.config.voice_changer.demo_monitor_enabled:
+            output_target = "演示监听｜本机扬声器/耳机（主播可听）"
+        elif self.config.voice_changer.output_device_index is None:
+            return "已启用｜未选择观众输出设备"
+        else:
+            output_target = f"观众输出｜设备 {self.config.voice_changer.output_device_index}"
         if self.voice_changer.running:
-            output_target = (
-                "系统默认输出"
-                if self.config.voice_changer.output_device_index is None
-                else f"输出设备 {self.config.voice_changer.output_device_index}"
-            )
             return (
                 f"运行中｜{output_target}｜"
                 f"音高={self.config.voice_changer.pitch_semitones} "
                 f"混响={int(self.config.voice_changer.reverb_mix * 100)}% "
                 f"音量={int(self.config.voice_changer.output_gain * 100)}%"
             )
-        return "已启用，等待输出"
+        return f"已启用｜{output_target}｜等待输出"
 
     def _emit_voice_changer_status(self, text: str) -> None:
         """投递变声器状态，避免状态回调异常影响语音主链路。"""

@@ -132,6 +132,7 @@ class LiveDashboardPage(QWidget):
         self._voice_controls_loading = True
         try:
             self._voice_enabled_control.setChecked(config.voice_changer_enabled)
+            self._voice_demo_monitor_control.setChecked(config.voice_demo_monitor_enabled)
             self._voice_pitch_control.setValue(config.voice_pitch_semitones)
             self._voice_reverb_control.setValue(config.voice_reverb_percent)
             self._voice_wet_control.setValue(config.voice_wet_percent)
@@ -374,6 +375,12 @@ class LiveDashboardPage(QWidget):
         self._voice_enabled_control.setObjectName("voiceRuntimeToggle")
         self._voice_enabled_control.stateChanged.connect(self._on_voice_changer_control_changed)
         header_row.addWidget(self._voice_enabled_control)
+
+        self._voice_demo_monitor_control = QCheckBox("演示监听", self)
+        self._voice_demo_monitor_control.setObjectName("voiceRuntimeToggle")
+        self._voice_demo_monitor_control.setToolTip("仅用于演示，会从本机扬声器或耳机播放变声后的声音")
+        self._voice_demo_monitor_control.stateChanged.connect(self._on_voice_changer_control_changed)
+        header_row.addWidget(self._voice_demo_monitor_control)
         layout.addLayout(header_row)
 
         controls_grid = QGridLayout()
@@ -423,6 +430,7 @@ class LiveDashboardPage(QWidget):
 
         settings: dict[str, int | bool] = {
             "enabled": self._voice_enabled_control.isChecked(),
+            "demo_monitor_enabled": self._voice_demo_monitor_control.isChecked(),
             "pitch_semitones": self._voice_pitch_control.value(),
             "reverb_percent": self._voice_reverb_control.value(),
             "wet_percent": self._voice_wet_control.value(),

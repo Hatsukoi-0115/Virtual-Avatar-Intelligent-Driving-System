@@ -419,15 +419,20 @@ class SettingsPage(QWidget):
         header_row.addWidget(title)
         header_row.addStretch()
 
-        self._voice_changer_enabled = QCheckBox("启用", self)
+        self._voice_changer_enabled = QCheckBox("启用输出", self)
         self._voice_changer_enabled.setObjectName("voiceChangerToggle")
         header_row.addWidget(self._voice_changer_enabled)
+
+        self._voice_demo_monitor_enabled = QCheckBox("演示监听", self)
+        self._voice_demo_monitor_enabled.setObjectName("voiceChangerToggle")
+        self._voice_demo_monitor_enabled.setToolTip("仅用于演示，会从本机扬声器或耳机播放变声后的声音")
+        header_row.addWidget(self._voice_demo_monitor_enabled)
         layout.addLayout(header_row)
 
         device_row = QHBoxLayout()
         device_row.setSpacing(10)
         device_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        device_row.addWidget(self._create_field_label("输出"))
+        device_row.addWidget(self._create_field_label("观众输出"))
 
         self._voice_output_device = NoWheelComboBox(self)
         self._voice_output_device.setObjectName("voiceOutputSelect")
@@ -895,6 +900,7 @@ class SettingsPage(QWidget):
         self._mic_sample_rate.currentTextChanged.connect(self._on_setting_changed)
         self._mic_block_size.valueChanged.connect(self._on_setting_changed)
         self._voice_changer_enabled.stateChanged.connect(self._on_setting_changed)
+        self._voice_demo_monitor_enabled.stateChanged.connect(self._on_setting_changed)
         self._voice_output_device.currentIndexChanged.connect(self._on_setting_changed)
         self._voice_output_sample_rate.currentTextChanged.connect(self._on_setting_changed)
         self._voice_pitch.valueChanged.connect(self._on_setting_changed)
@@ -920,6 +926,7 @@ class SettingsPage(QWidget):
             self._mic_sample_rate,
             self._mic_block_size,
             self._voice_changer_enabled,
+            self._voice_demo_monitor_enabled,
             self._voice_output_device,
             self._voice_output_sample_rate,
             self._voice_pitch,
@@ -943,6 +950,7 @@ class SettingsPage(QWidget):
         self._set_combo_value(self._mic_sample_rate, f"{self._config.mic_sample_rate} Hz")
         self._mic_block_size.setValue(self._config.mic_block_size)
         self._voice_changer_enabled.setChecked(self._config.voice_changer_enabled)
+        self._voice_demo_monitor_enabled.setChecked(self._config.voice_demo_monitor_enabled)
         self._set_combo_value(self._voice_output_sample_rate, f"{self._config.voice_output_sample_rate} Hz")
         self._voice_pitch.setValue(self._config.voice_pitch_semitones)
         self._voice_reverb.setValue(self._config.voice_reverb_percent)
@@ -1005,7 +1013,7 @@ class SettingsPage(QWidget):
             devices = []
 
         self._voice_output_device.clear()
-        self._voice_output_device.addItem("系统默认输出", None)
+        self._voice_output_device.addItem("未选择观众输出（推荐虚拟声卡）", None)
         device_map = {index: name for index, name in devices}
         for index, name in sorted(device_map.items()):
             self._voice_output_device.addItem(f"{name}  [{index}]", index)
@@ -1294,6 +1302,7 @@ class SettingsPage(QWidget):
         self._config.mic_sample_rate = int(self._mic_sample_rate.currentText().split()[0])
         self._config.mic_block_size = self._mic_block_size.value()
         self._config.voice_changer_enabled = self._voice_changer_enabled.isChecked()
+        self._config.voice_demo_monitor_enabled = self._voice_demo_monitor_enabled.isChecked()
         self._config.voice_output_device_index = None if voice_output_index is None else int(voice_output_index)
         self._config.voice_output_sample_rate = int(self._voice_output_sample_rate.currentText().split()[0])
         self._config.voice_pitch_semitones = self._voice_pitch.value()
@@ -1308,7 +1317,7 @@ class SettingsPage(QWidget):
         self._set_config_valid(self._compute_config_validity())
 
         LOGGER.info(
-            "配置已更新：camera=%s %dx%d@%dfps mic=%s %sHz block=%s voice_changer=%s llm_configured=%s valid=%s",
+            "配置已更新：camera=%s %dx%d@%dfps mic=%s %sHz block=%s voice_changer=%s demo_monitor=%s llm_configured=%s valid=%s",
             self._config.camera_index,
             self._config.camera_width,
             self._config.camera_height,
@@ -1317,6 +1326,7 @@ class SettingsPage(QWidget):
             self._config.mic_sample_rate,
             self._config.mic_block_size,
             self._config.voice_changer_enabled,
+            self._config.voice_demo_monitor_enabled,
             bool(self._config.llm_api_key and self._config.llm_model),
             self._is_config_valid,
         )

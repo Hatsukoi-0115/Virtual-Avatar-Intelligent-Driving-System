@@ -3,7 +3,7 @@
 职责：
 - 接收麦克风音频块
 - 执行低延迟 DSP 变声处理
-- 将处理后的音频输出到扬声器或虚拟声卡
+- 将处理后的音频输出到观众侧虚拟声卡，或在演示模式下输出到本机监听设备
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ class VoiceChangerConfig:
     """变声器运行配置。"""
 
     enabled: bool = False
+    demo_monitor_enabled: bool = False
     output_device_index: int | None = None
     output_sample_rate: int = 48000
     block_size: int = 1600
@@ -147,6 +148,7 @@ class RealtimeVoiceChangerService:
     def update_config(self, config: VoiceChangerConfig) -> None:
         """运行中更新变声器配置。"""
         with self._config_lock:
+            old_config = self.config
             was_enabled = self.config.enabled
             self.config = config
             self.processor.update_config(config)
@@ -162,6 +164,11 @@ class RealtimeVoiceChangerService:
             return
 
         if self._running and was_enabled and config.enabled:
+            if self._should_restart_output(old_config, config):
+                # 输出目标或流格式变化时需要重启 PortAudio 流，否则声音仍会留在旧设备。
+                self.stop()
+                self.start()
+                return
             LOGGER.info(
                 "实时变声器参数已更新：pitch=%s reverb=%.2f wet=%.2f gain=%.2f",
                 config.pitch_semitones,
@@ -176,19 +183,22 @@ class RealtimeVoiceChangerService:
             config = self.config
         if not config.enabled or self._running:
             return
+        output_device_index = self._resolve_effective_output_device(config)
+        if output_device_index is None and not config.demo_monitor_enabled:
+            raise RuntimeError("未选择观众输出设备，请选择虚拟声卡或开启演示监听")
 
         import sounddevice as sd
 
         try:
             self._stop_event.clear()
             self._clear_buffers()
-            self._output_channels = self._resolve_output_channels(sd, config.output_device_index)
+            self._output_channels = self._resolve_output_channels(sd, output_device_index)
             self._stream = sd.OutputStream(
                 samplerate=config.output_sample_rate,
                 channels=self._output_channels,
                 dtype="float32",
                 blocksize=config.block_size,
-                device=config.output_device_index,
+                device=output_device_index,
                 callback=self._on_output,
             )
             self._stream.start()
@@ -201,7 +211,7 @@ class RealtimeVoiceChangerService:
             self._running = True
             LOGGER.info(
                 "实时变声器已启动：device=%s sample_rate=%s channels=%s pitch=%s",
-                config.output_device_index,
+                output_device_index,
                 config.output_sample_rate,
                 self._output_channels,
                 config.pitch_semitones,
@@ -317,3 +327,19 @@ class RealtimeVoiceChangerService:
             LOGGER.warning("读取输出设备声道数失败，使用单声道输出：%s", exc)
             return 1
         return 2 if max_channels >= 2 else 1
+
+    def _resolve_effective_output_device(self, config: VoiceChangerConfig) -> int | None:
+        """根据模式解析实际输出设备。"""
+        if config.demo_monitor_enabled:
+            # 演示监听明确面向主播本机试听，使用系统默认输出设备。
+            return None
+        return config.output_device_index
+
+    def _should_restart_output(self, old_config: VoiceChangerConfig, new_config: VoiceChangerConfig) -> bool:
+        """判断输出流是否需要重启。"""
+        return (
+            self._resolve_effective_output_device(old_config) != self._resolve_effective_output_device(new_config)
+            or old_config.demo_monitor_enabled != new_config.demo_monitor_enabled
+            or old_config.output_sample_rate != new_config.output_sample_rate
+            or old_config.block_size != new_config.block_size
+        )

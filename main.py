@@ -135,6 +135,7 @@ def main() -> None:
         current_config = main_window.config
         return VoiceChangerConfig(
             enabled=current_config.voice_changer_enabled,
+            demo_monitor_enabled=current_config.voice_demo_monitor_enabled,
             output_device_index=current_config.voice_output_device_index,
             output_sample_rate=current_config.voice_output_sample_rate,
             block_size=current_config.mic_block_size,
@@ -147,6 +148,7 @@ def main() -> None:
     def _on_voice_changer_settings_changed(settings: dict[str, int | bool]) -> None:
         """直播中调节变声器参数，并同步到配置和后端服务。"""
         main_window.config.voice_changer_enabled = bool(settings["enabled"])
+        main_window.config.voice_demo_monitor_enabled = bool(settings["demo_monitor_enabled"])
         main_window.config.voice_pitch_semitones = int(settings["pitch_semitones"])
         main_window.config.voice_reverb_percent = int(settings["reverb_percent"])
         main_window.config.voice_wet_percent = int(settings["wet_percent"])
