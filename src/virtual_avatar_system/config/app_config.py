@@ -20,6 +20,48 @@ CONFIG_FILE: Final[Path] = CONFIG_DIR / "app_config.json"
 ENV_FILE: Final[Path] = PROJECT_ROOT / ".env"
 DEFAULT_MODEL_PATH: Final[str] = "models/haru_ja/runtime/haru.model3.json"
 DEFAULT_EMOTION_MODEL_PATH: Final[str] = "models/hf_cache/Johnson8187__Chinese-Emotion-Small"
+DEFAULT_COURSE_QA_PROMPT: Final[str] = """直播内容：
+本场直播是“虚拟形象智能驱动系统”课程答疑与验收演示。
+重点围绕摄像头检测、麦克风输入、FunASR 文本识别、中文情感分类、LLM 语义理解、Live2D 动作联动、B站评论接入、话术建议和直播报告。
+目标是让老师和同学理解：系统不是简单模型拼接，而是面向直播互动场景的多模态虚拟主播辅助系统。
+
+主播人设：
+你是课程项目演示主播。
+语气专业、清晰、稳重，但不要生硬。
+回答要像现场答辩一样自然，先正面回应观众，再补充一两个项目亮点。
+遇到老师追问时，要主动联系业务价值、系统流程和数据沉淀。
+
+回答边界：
+只围绕本项目已实现功能、课程展示价值和演示流程回答。
+不要夸大未实现能力，不要编造价格、商业承诺、真实商用案例或外部平台功能。
+不确定的问题要提示主播说明“目前演示版暂未覆盖，后续可扩展”。
+
+输出要求：
+推荐回复必须适合主播直接口播。
+每句话尽量短，单句不超过 25 个中文字符。
+推荐回复控制在 1 到 2 句话内，总长度不超过 70 个中文字符。
+推荐讲解重点控制在 3 到 5 个短词，不要写长句。"""
+DEFAULT_ECOMMERCE_PROMPT: Final[str] = """直播内容：
+本场直播模拟电商带货场景。
+主播通过虚拟形象辅助讲解商品卖点、适用人群、使用场景、使用方法、售后注意事项和直播间互动答疑。
+重点让观众快速知道“适不适合我、怎么用、有什么优势、现在该关注什么”。
+
+主播人设：
+你是亲和、可信、节奏清晰的带货主播。
+语气热情但不过度夸张。
+回答要口语化，先解决观众疑问，再自然带到商品卖点或使用场景。
+对犹豫型评论，要降低理解成本，给出清楚的选择建议。
+
+回答边界：
+只围绕当前商品、直播间讲解内容和公开可确认的信息回答。
+不要虚构库存、价格、优惠、疗效、官方承诺或绝对化效果。
+涉及价格、库存、发货、售后时，提醒主播以直播间页面或客服说明为准。
+
+输出要求：
+推荐回复必须适合主播直接口播。
+每句话尽量短，单句不超过 25 个中文字符。
+推荐回复控制在 1 到 2 句话内，总长度不超过 70 个中文字符。
+推荐讲解重点控制在 3 到 5 个短词，不要写长句。"""
 
 
 @dataclass(slots=True)
@@ -60,6 +102,16 @@ class AppConfig:
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
+
+    # ---- 观众评论 Prompt 配置 ----
+    comment_prompt_mode: str = "course_qa"
+    comment_course_prompt: str = DEFAULT_COURSE_QA_PROMPT
+    comment_ecommerce_prompt: str = DEFAULT_ECOMMERCE_PROMPT
+    comment_custom_prompt: str = ""
+    # 兼容旧版拆分字段，后续读取旧配置时仍可正常加载。
+    comment_live_content: str = "虚拟形象智能驱动系统直播演示，重点展示摄像头、麦克风、FunASR、情绪理解、LLM 语义理解、Live2D 动作联动、B站评论接入和直播报告。"
+    comment_host_persona: str = "课程项目演示主播，表达清晰、客观专业，面向老师和同学讲解系统能力。"
+    comment_answer_boundary: str = "回答必须围绕本项目功能、演示场景和课程验收，不夸大未实现能力，不编造价格、商业承诺或外部平台功能。"
 
     # ---- 窗口状态 ----
     preview_visible: bool = False
@@ -133,6 +185,25 @@ def save_llm_env(config: AppConfig) -> None:
     ]
     ENV_FILE.write_text("\n".join(lines), encoding="utf-8")
     LOGGER.info("LLM 配置已同步到 .env：%s", ENV_FILE)
+
+
+def normalize_comment_prompt_mode(mode: str) -> str:
+    """把旧版 Prompt 模式兼容映射到当前三段切换模式。"""
+    if mode in {"custom"}:
+        return "custom"
+    if mode in {"ecommerce", "ecommerce_sales"}:
+        return "ecommerce"
+    return "course_qa"
+
+
+def get_comment_prompt_text(config: AppConfig) -> str:
+    """根据当前 Prompt 模式读取完整提示词。"""
+    mode = normalize_comment_prompt_mode(config.comment_prompt_mode)
+    if mode == "ecommerce":
+        return config.comment_ecommerce_prompt.strip() or DEFAULT_ECOMMERCE_PROMPT
+    if mode == "custom":
+        return config.comment_custom_prompt.strip()
+    return config.comment_course_prompt.strip() or DEFAULT_COURSE_QA_PROMPT
 
 
 def resolve_project_path(path_value: str | Path) -> Path:

@@ -243,7 +243,7 @@ class MainWindow(QMainWindow):
         self._settings_page.config_validity_changed.connect(self._on_config_validity_changed)
 
         self._loading_page = self._build_loading_page()
-        self._live_dashboard = LiveDashboardPage(self)
+        self._live_dashboard = LiveDashboardPage(self._config, self)
         self._report_summary_page = LiveReportSummaryPage(self)
         self._content_stack = QStackedWidget(self)
         self._content_stack.addWidget(self._settings_page)
