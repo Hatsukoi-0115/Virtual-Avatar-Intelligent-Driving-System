@@ -42,6 +42,15 @@ class AppConfig:
     mic_sample_rate: int = 16000
     mic_block_size: int = 1600
 
+    # ---- 轻量实时变声器 ----
+    voice_changer_enabled: bool = False
+    voice_output_device_index: int | None = None
+    voice_output_sample_rate: int = 48000
+    voice_pitch_semitones: int = 4
+    voice_reverb_percent: int = 8
+    voice_wet_percent: int = 100
+    voice_output_gain_percent: int = 80
+
     # ---- 语音识别与自然句切分 ----
     asr_model: str = "paraformer-zh-streaming"
     # 调试重点：自然语句结束停顿阈值。调小会更快换行和触发 LLM，调大会等待更完整的句子。

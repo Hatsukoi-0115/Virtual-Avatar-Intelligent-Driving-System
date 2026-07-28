@@ -11,13 +11,17 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -25,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from virtual_avatar_system.business.comment_advisor import analyze_audience_comment
 from virtual_avatar_system.comments.bilibili_comment_source import BilibiliComment, BilibiliCommentSource
+from virtual_avatar_system.config.app_config import AppConfig
 from virtual_avatar_system.ui.log_panel import LogPanel
 
 
@@ -51,6 +56,8 @@ class LiveDashboardPage(QWidget):
         self._signal.bilibili_comment.connect(self._on_bilibili_comment_received, Qt.ConnectionType.QueuedConnection)
         self._signal.bilibili_running.connect(self._apply_bilibili_running, Qt.ConnectionType.QueuedConnection)
         self._on_audience_comment_callbacks: list[Callable[[str, str, str], None]] = []
+        self._on_voice_changer_settings_callbacks: list[Callable[[dict[str, int | bool]], None]] = []
+        self._voice_controls_loading = False
         self._setup_ui()
         self.reset()
 
@@ -58,12 +65,17 @@ class LiveDashboardPage(QWidget):
         """注册观众评论分析结果回调。"""
         self._on_audience_comment_callbacks.append(callback)
 
+    def on_voice_changer_settings_changed(self, callback: Callable[[dict[str, int | bool]], None]) -> None:
+        """注册变声器运行时参数变更回调。"""
+        self._on_voice_changer_settings_callbacks.append(callback)
+
     def reset(self) -> None:
         """重置直播状态为等待启动。"""
         self.update_camera_connection_status("等待启动")
         self.update_face_detection_status("等待检测")
         self.update_microphone_connection_status("等待启动")
         self.update_microphone_listening_status("等待监听")
+        self.update_voice_changer_status("等待启动")
         self.update_asr_text("等待输入")
         self.update_semantic_label("待识别")
         self.update_emotion_result("中性")
@@ -111,6 +123,22 @@ class LiveDashboardPage(QWidget):
         """更新麦克风监听状态。"""
         self._signal.update.emit("microphone_listening", text)
 
+    def update_voice_changer_status(self, text: str) -> None:
+        """更新变声器状态。"""
+        self._signal.update.emit("voice_changer", text or "未启用")
+
+    def set_voice_changer_controls(self, config: AppConfig) -> None:
+        """把当前配置同步到运行时变声器控件。"""
+        self._voice_controls_loading = True
+        try:
+            self._voice_enabled_control.setChecked(config.voice_changer_enabled)
+            self._voice_pitch_control.setValue(config.voice_pitch_semitones)
+            self._voice_reverb_control.setValue(config.voice_reverb_percent)
+            self._voice_wet_control.setValue(config.voice_wet_percent)
+            self._voice_gain_control.setValue(config.voice_output_gain_percent)
+        finally:
+            self._voice_controls_loading = False
+
     def update_asr_text(self, text: str) -> None:
         """更新 ASR 文本。"""
         self._signal.update.emit("asr", text or "等待输入")
@@ -146,6 +174,7 @@ class LiveDashboardPage(QWidget):
             "face_detection": self._face_detection_value,
             "microphone_connection": self._microphone_connection_value,
             "microphone_listening": self._microphone_listening_value,
+            "voice_changer": self._voice_changer_value,
             "asr": self._asr_value,
             "semantic": self._semantic_value,
             "emotion": self._emotion_value,
@@ -267,6 +296,17 @@ class LiveDashboardPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        scroll_area = QScrollArea(page)
+        scroll_area.setObjectName("dashboardScrollArea")
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+
+        scroll_content = QWidget(scroll_area)
+        scroll_content.setObjectName("dashboardScrollContent")
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(0)
+
         status_card = QFrame(page)
         status_card.setObjectName("dashboardCard")
         status_layout = QGridLayout(status_card)
@@ -279,6 +319,8 @@ class LiveDashboardPage(QWidget):
         status_layout.setRowMinimumHeight(3, 82)
         status_layout.setRowMinimumHeight(4, 82)
         status_layout.setRowMinimumHeight(5, 78)
+        status_layout.setRowMinimumHeight(6, 78)
+        status_layout.setRowMinimumHeight(7, 128)
 
         title = QLabel("实时状态", self)
         title.setObjectName("dashboardTitle")
@@ -288,6 +330,7 @@ class LiveDashboardPage(QWidget):
         self._face_detection_value = self._create_value_label()
         self._microphone_connection_value = self._create_value_label()
         self._microphone_listening_value = self._create_value_label()
+        self._voice_changer_value = self._create_value_label()
         self._asr_value = self._create_value_label()
         self._semantic_value = self._create_value_label()
         self._emotion_value = self._create_value_label()
@@ -301,10 +344,92 @@ class LiveDashboardPage(QWidget):
         status_layout.addWidget(self._create_status_tile("LLM语义标签", self._semantic_value, wide=True), 4, 0, 1, 2)
         status_layout.addWidget(self._create_status_tile("情绪结果", self._emotion_value), 5, 0)
         status_layout.addWidget(self._create_status_tile("当前动作", self._motion_value), 5, 1)
+        status_layout.addWidget(self._create_status_tile("变声器状态", self._voice_changer_value, wide=True), 6, 0, 1, 2)
+        status_layout.addWidget(self._build_voice_changer_controls(), 7, 0, 1, 2)
 
-        layout.addWidget(status_card)
-        layout.addStretch()
+        scroll_layout.addWidget(status_card)
+        scroll_layout.addStretch()
+        scroll_area.setWidget(scroll_content)
+        layout.addWidget(scroll_area, stretch=1)
         return page
+
+    def _build_voice_changer_controls(self) -> QFrame:
+        """创建直播中可调的变声器控制区。"""
+        panel = QFrame(self)
+        panel.setObjectName("dashboardWideTile")
+        panel.setMinimumHeight(128)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(8)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(10)
+        label = QLabel("运行时调节", self)
+        label.setObjectName("dashboardLabel")
+        header_row.addWidget(label)
+        header_row.addStretch()
+
+        self._voice_enabled_control = QCheckBox("启用变声器输出", self)
+        self._voice_enabled_control.setObjectName("voiceRuntimeToggle")
+        self._voice_enabled_control.stateChanged.connect(self._on_voice_changer_control_changed)
+        header_row.addWidget(self._voice_enabled_control)
+        layout.addLayout(header_row)
+
+        controls_grid = QGridLayout()
+        controls_grid.setContentsMargins(0, 0, 0, 0)
+        controls_grid.setHorizontalSpacing(12)
+        controls_grid.setVerticalSpacing(8)
+
+        self._voice_pitch_control = self._create_spin_box(-12, 12, " 半音")
+        self._voice_reverb_control = self._create_spin_box(0, 60, "%")
+        self._voice_wet_control = self._create_spin_box(0, 100, "%")
+        self._voice_gain_control = self._create_spin_box(0, 150, "%")
+
+        for index, (text, control) in enumerate((
+            ("音高", self._voice_pitch_control),
+            ("混响", self._voice_reverb_control),
+            ("变声量", self._voice_wet_control),
+            ("音量", self._voice_gain_control),
+        )):
+            item_label = QLabel(text, self)
+            item_label.setObjectName("dashboardLabel")
+            row = index // 2
+            column = (index % 2) * 2
+            controls_grid.addWidget(item_label, row, column)
+            controls_grid.addWidget(control, row, column + 1)
+            controls_grid.setColumnStretch(column + 1, 1)
+
+        layout.addLayout(controls_grid)
+        return panel
+
+    def _create_spin_box(self, minimum: int, maximum: int, suffix: str) -> QSpinBox:
+        """创建紧凑数字调节框。"""
+        spin_box = QSpinBox(self)
+        spin_box.setObjectName("voiceRuntimeSpinBox")
+        spin_box.setRange(minimum, maximum)
+        spin_box.setSuffix(suffix)
+        spin_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        spin_box.setFixedHeight(32)
+        spin_box.setMinimumWidth(96)
+        spin_box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        spin_box.valueChanged.connect(self._on_voice_changer_control_changed)
+        return spin_box
+
+    def _on_voice_changer_control_changed(self, *_args) -> None:
+        """运行时变声器控件变化后通知主程序更新后端配置。"""
+        if self._voice_controls_loading:
+            return
+
+        settings: dict[str, int | bool] = {
+            "enabled": self._voice_enabled_control.isChecked(),
+            "pitch_semitones": self._voice_pitch_control.value(),
+            "reverb_percent": self._voice_reverb_control.value(),
+            "wet_percent": self._voice_wet_control.value(),
+            "gain_percent": self._voice_gain_control.value(),
+        }
+        for callback in self._on_voice_changer_settings_callbacks:
+            callback(settings)
 
     def _build_comment_advice_page(self) -> QWidget:
         """创建右侧话术建议内容页。"""
@@ -501,6 +626,8 @@ class LiveDashboardPage(QWidget):
             QStackedWidget#dashboardContentStack,
             QStackedWidget#adviceInputStack,
             QWidget#adviceInputPanel,
+            QWidget#dashboardScrollContent,
+            QScrollArea#dashboardScrollArea,
             QWidget#dashboardPanelPage {
                 background: transparent;
                 border: 0;
@@ -535,6 +662,34 @@ class LiveDashboardPage(QWidget):
                 color: #0F172A;
                 font-size: 14px;
                 font-weight: 600;
+            }
+            QCheckBox#voiceRuntimeToggle {
+                color: #0F172A;
+                font-size: 13px;
+                font-weight: 600;
+                spacing: 7px;
+            }
+            QCheckBox#voiceRuntimeToggle::indicator {
+                width: 16px;
+                height: 16px;
+                border: 1px solid #CBD5E1;
+                border-radius: 4px;
+                background: #FFFFFF;
+            }
+            QCheckBox#voiceRuntimeToggle::indicator:checked {
+                background: #2563EB;
+                border: 1px solid #2563EB;
+            }
+            QSpinBox#voiceRuntimeSpinBox {
+                background: #FFFFFF;
+                border: 1px solid #CBD5E1;
+                border-radius: 6px;
+                color: #0F172A;
+                font-size: 13px;
+                padding-left: 6px;
+            }
+            QSpinBox#voiceRuntimeSpinBox:focus {
+                border: 1px solid #2563EB;
             }
             QPushButton#dashboardNavButton {
                 background: transparent;

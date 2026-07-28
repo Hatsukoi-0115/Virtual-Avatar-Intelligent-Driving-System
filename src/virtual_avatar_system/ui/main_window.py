@@ -80,6 +80,10 @@ class MainWindow(QMainWindow):
         """注册观众评论分析结果回调。"""
         self._live_dashboard.on_audience_comment(callback)
 
+    def on_voice_changer_settings_changed(self, callback: Callable[[dict[str, int | bool]], None]) -> None:
+        """注册运行时变声器参数变更回调。"""
+        self._live_dashboard.on_voice_changer_settings_changed(callback)
+
     # ---- 公共访问 ----
 
     @property
@@ -131,6 +135,14 @@ class MainWindow(QMainWindow):
     def update_microphone_listening_status(self, text: str) -> None:
         """更新直播页麦克风监听状态。"""
         self._live_dashboard.update_microphone_listening_status(text)
+
+    def update_voice_changer_status(self, text: str) -> None:
+        """更新直播页变声器状态。"""
+        self._live_dashboard.update_voice_changer_status(text)
+
+    def sync_voice_changer_controls(self) -> None:
+        """把当前配置同步到直播页变声器运行时控件。"""
+        self._live_dashboard.set_voice_changer_controls(self._config)
 
     def update_asr_text(self, text: str) -> None:
         """更新直播页 ASR 文本。"""

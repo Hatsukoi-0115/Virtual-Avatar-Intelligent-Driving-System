@@ -37,6 +37,7 @@ from virtual_avatar_system.audio.live_speech_service import (
     LiveSpeechServiceConfig,
     LiveSpeechUnderstandingService,
 )
+from virtual_avatar_system.audio.voice_changer import VoiceChangerConfig
 from virtual_avatar_system.ui.main_window import MainWindow
 from virtual_avatar_system.ui.system_tray import AppSystemTray
 from virtual_avatar_system.renderer.live2d_renderer import Live2DRenderer
@@ -128,6 +129,37 @@ def main() -> None:
         event_recorder.record_audience_comment(comment, semantic_label, suggested_reply)
 
     main_window.on_audience_comment(_on_audience_comment)
+
+    def _build_voice_changer_config() -> VoiceChangerConfig:
+        """从当前 AppConfig 构造实时变声器配置。"""
+        current_config = main_window.config
+        return VoiceChangerConfig(
+            enabled=current_config.voice_changer_enabled,
+            output_device_index=current_config.voice_output_device_index,
+            output_sample_rate=current_config.voice_output_sample_rate,
+            block_size=current_config.mic_block_size,
+            pitch_semitones=current_config.voice_pitch_semitones,
+            reverb_mix=current_config.voice_reverb_percent / 100,
+            wet_mix=current_config.voice_wet_percent / 100,
+            output_gain=current_config.voice_output_gain_percent / 100,
+        )
+
+    def _on_voice_changer_settings_changed(settings: dict[str, int | bool]) -> None:
+        """直播中调节变声器参数，并同步到配置和后端服务。"""
+        main_window.config.voice_changer_enabled = bool(settings["enabled"])
+        main_window.config.voice_pitch_semitones = int(settings["pitch_semitones"])
+        main_window.config.voice_reverb_percent = int(settings["reverb_percent"])
+        main_window.config.voice_wet_percent = int(settings["wet_percent"])
+        main_window.config.voice_output_gain_percent = int(settings["gain_percent"])
+        save_config(main_window.config)
+
+        if speech_service is None:
+            main_window.update_voice_changer_status("直播启动后生效")
+            return
+
+        speech_service.update_voice_changer_config(_build_voice_changer_config())
+
+    main_window.on_voice_changer_settings_changed(_on_voice_changer_settings_changed)
 
     # 当前情绪表情 ID，由语音链路回调更新，供视觉桥接定时器带入 AvatarInputState
     latest_expression = "Normal"
@@ -275,6 +307,8 @@ def main() -> None:
         main_window.update_face_detection_status("等待检测")
         main_window.update_microphone_connection_status("连接中")
         main_window.update_microphone_listening_status("等待监听")
+        main_window.sync_voice_changer_controls()
+        main_window.update_voice_changer_status("等待启动")
         _flush_ui_events()
         try:
             current_config = main_window.config
@@ -350,6 +384,7 @@ def main() -> None:
                 speech_service.on_asr_text(_on_asr_text)
                 speech_service.on_emotion(_on_emotion)
                 speech_service.on_semantic(_on_semantic)
+                speech_service.on_voice_changer_status(main_window.update_voice_changer_status)
             main_window.update_startup_stage("启动麦克风监听")
             _flush_ui_events()
             speech_service.start()
@@ -360,6 +395,7 @@ def main() -> None:
             logger.warning("语音/情绪/LLM 链路启动失败，仅保留视觉驱动：%s", exc)
             main_window.update_microphone_connection_status("连接失败")
             main_window.update_microphone_listening_status("未监听")
+            main_window.update_voice_changer_status("语音链路未启动")
             main_window.update_startup_stage("语音链路启动失败，视觉链路运行中")
             speech_service = None
 
@@ -382,6 +418,7 @@ def main() -> None:
         _update_stop_stage("正在停止直播...")
         main_window.update_microphone_connection_status("已停止")
         main_window.update_microphone_listening_status("已停止")
+        main_window.update_voice_changer_status("已停止")
         main_window.update_camera_connection_status("已停止")
         main_window.update_face_detection_status("已停止")
         _shutdown_speech(_update_stop_stage)

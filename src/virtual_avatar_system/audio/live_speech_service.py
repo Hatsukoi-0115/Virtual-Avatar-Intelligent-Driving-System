@@ -11,6 +11,7 @@ from typing import Callable
 from virtual_avatar_system.audio.funasr_streaming import FunAsrConfig, FunAsrStreamingRecognizer
 from virtual_avatar_system.audio.sentence_accumulator import SentenceAccumulator
 from virtual_avatar_system.audio.source import AudioStreamConfig, AudioStreamSource
+from virtual_avatar_system.audio.voice_changer import RealtimeVoiceChangerService, VoiceChangerConfig
 from virtual_avatar_system.config.app_config import AppConfig, resolve_project_path
 from virtual_avatar_system.emotion.classifier import EmotionClassifier, EmotionClassifierConfig, emotion_to_expression
 from virtual_avatar_system.llm.semantic import SemanticInterpreter, SemanticInterpreterConfig
@@ -29,6 +30,7 @@ class LiveSpeechServiceConfig:
     """直播语音服务配置。"""
 
     audio: AudioStreamConfig
+    voice_changer: VoiceChangerConfig
     asr: FunAsrConfig
     emotion: EmotionClassifierConfig
     llm: SemanticInterpreterConfig
@@ -50,6 +52,16 @@ class LiveSpeechServiceConfig:
                 device_index=app_config.microphone_index,
                 sample_rate=app_config.mic_sample_rate,
                 block_size=app_config.mic_block_size,
+            ),
+            voice_changer=VoiceChangerConfig(
+                enabled=app_config.voice_changer_enabled,
+                output_device_index=app_config.voice_output_device_index,
+                output_sample_rate=app_config.voice_output_sample_rate,
+                block_size=app_config.mic_block_size,
+                pitch_semitones=app_config.voice_pitch_semitones,
+                reverb_mix=app_config.voice_reverb_percent / 100,
+                wet_mix=app_config.voice_wet_percent / 100,
+                output_gain=app_config.voice_output_gain_percent / 100,
             ),
             asr=FunAsrConfig(model=app_config.asr_model, disable_pbar=True),
             emotion=EmotionClassifierConfig(model_path=str(resolve_project_path(app_config.emotion_model_path))),
@@ -73,6 +85,7 @@ class LiveSpeechUnderstandingService:
     def __init__(self, config: LiveSpeechServiceConfig) -> None:
         self.config = config
         self.audio_source = AudioStreamSource(config.audio)
+        self.voice_changer = RealtimeVoiceChangerService(config.voice_changer)
         self.recognizer = FunAsrStreamingRecognizer(config.asr)
         self.emotion_classifier = EmotionClassifier(config.emotion)
         self.semantic_interpreter = SemanticInterpreter(config.llm)
@@ -92,6 +105,8 @@ class LiveSpeechUnderstandingService:
         self._on_emotion: Callable[[str, float, str], None] | None = None
         # LLM语义→动作回调，主线程注册后在此触发
         self._on_semantic: Callable[[str, float, str], None] | None = None
+        # 变声器状态回调，主线程注册后在此触发
+        self._on_voice_changer_status: Callable[[str], None] | None = None
 
     def on_asr_text(self, callback: Callable[[str], None]) -> None:
         """注册 ASR 文本回调，参数为当前累积句子。"""
@@ -104,6 +119,10 @@ class LiveSpeechUnderstandingService:
     def on_semantic(self, callback: Callable[[str, float, str], None]) -> None:
         """注册LLM语义→动作回调，参数为 (动作标签, 置信度, 摘要)。"""
         self._on_semantic = callback
+
+    def on_voice_changer_status(self, callback: Callable[[str], None]) -> None:
+        """注册变声器状态回调。"""
+        self._on_voice_changer_status = callback
 
     @property
     def running(self) -> bool:
@@ -118,6 +137,13 @@ class LiveSpeechUnderstandingService:
         self._stop_event.clear()
         self._reset_sentence_state()
         self.audio_source.start()
+        try:
+            self.voice_changer.start()
+            self._emit_voice_changer_status(self._format_voice_changer_status())
+        except Exception as exc:  # noqa: BLE001
+            # 变声器是旁路能力，输出设备异常时不能拖垮 ASR、情绪和 LLM 主链路。
+            LOGGER.warning("实时变声器启动失败，已跳过变声输出：%s", exc)
+            self._emit_voice_changer_status(f"启动失败：{exc}")
         self._thread = threading.Thread(
             target=self._run_loop,
             name="live-speech-understanding",
@@ -132,10 +158,22 @@ class LiveSpeechUnderstandingService:
         if self._thread is not None:
             self._thread.join(timeout=5.0)
         self.audio_source.stop()
+        self.voice_changer.stop()
+        self._emit_voice_changer_status("已停止")
         self.audio_source.clear()
         self.recognizer.close()
         self._thread = None
         print("[C] 语音/情绪/LLM 链路已停止", flush=True)
+
+    def update_voice_changer_config(self, config: VoiceChangerConfig) -> None:
+        """运行中更新变声器配置。"""
+        self.config.voice_changer = config
+        try:
+            self.voice_changer.update_config(config)
+            self._emit_voice_changer_status(self._format_voice_changer_status())
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("实时变声器配置更新失败：%s", exc)
+            self._emit_voice_changer_status(f"配置失败：{exc}")
 
     def _run_loop(self) -> None:
         """持续读取音频块并输出情绪与语义结果。"""
@@ -147,6 +185,8 @@ class LiveSpeechUnderstandingService:
                     self._check_sentence_pause()
                     continue
 
+                # 变声器走旁路输出，ASR 继续消费原始音频，避免音效影响识别准确率。
+                self.voice_changer.push(chunk)
                 asr_result = self.recognizer.transcribe(chunk, is_final=False)
                 if asr_result.error:
                     LOGGER.warning("ASR 结果异常：%s", asr_result.error)
@@ -160,6 +200,8 @@ class LiveSpeechUnderstandingService:
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("直播语音理解链路异常：%s", exc)
         finally:
+            self.voice_changer.stop()
+            self._emit_voice_changer_status("已停止")
             self.audio_source.stop()
 
     def _consume_asr_text(self, text: str) -> None:
@@ -298,6 +340,33 @@ class LiveSpeechUnderstandingService:
         self._sentence_accumulator.reset()
         self._last_emotion_chars = 0
         self._last_emotion_at = 0.0
+
+    def _format_voice_changer_status(self) -> str:
+        """格式化变声器状态，供 UI 展示。"""
+        if not self.config.voice_changer.enabled:
+            return "未启用"
+        if self.voice_changer.running:
+            output_target = (
+                "系统默认输出"
+                if self.config.voice_changer.output_device_index is None
+                else f"输出设备 {self.config.voice_changer.output_device_index}"
+            )
+            return (
+                f"运行中｜{output_target}｜"
+                f"音高={self.config.voice_changer.pitch_semitones} "
+                f"混响={int(self.config.voice_changer.reverb_mix * 100)}% "
+                f"音量={int(self.config.voice_changer.output_gain * 100)}%"
+            )
+        return "已启用，等待输出"
+
+    def _emit_voice_changer_status(self, text: str) -> None:
+        """投递变声器状态，避免状态回调异常影响语音主链路。"""
+        if self._on_voice_changer_status is None:
+            return
+        try:
+            self._on_voice_changer_status(text)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("变声器状态回调异常：%s", exc)
 
 
 def main() -> None:

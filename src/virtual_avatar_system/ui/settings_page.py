@@ -18,6 +18,7 @@ from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QColor, QIntValidator, QPalette
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from virtual_avatar_system.audio.source import list_available_microphone_devices
+from virtual_avatar_system.audio.voice_changer import list_available_audio_output_devices
 from virtual_avatar_system.config.app_config import (
     AppConfig,
     project_relative_path,
@@ -226,6 +228,7 @@ class SettingsPage(QWidget):
         layout.setSpacing(14)
         layout.addWidget(self._build_camera_card())
         layout.addWidget(self._build_microphone_card())
+        layout.addWidget(self._build_voice_changer_card())
         layout.addStretch()
         return page
 
@@ -402,6 +405,89 @@ class SettingsPage(QWidget):
         self._microphone_test_status.setWordWrap(True)
         test_row.addWidget(self._microphone_test_status, stretch=1)
         layout.addLayout(test_row)
+        return card
+
+    def _build_voice_changer_card(self) -> QFrame:
+        """创建轻量实时变声器配置卡片。"""
+        card = self._create_card("voiceChangerCard")
+        layout = self._create_card_layout(card)
+
+        header_row = QHBoxLayout()
+        header_row.setSpacing(10)
+        title = QLabel("轻量实时变声器", self)
+        title.setObjectName("cardTitle")
+        header_row.addWidget(title)
+        header_row.addStretch()
+
+        self._voice_changer_enabled = QCheckBox("启用", self)
+        self._voice_changer_enabled.setObjectName("voiceChangerToggle")
+        header_row.addWidget(self._voice_changer_enabled)
+        layout.addLayout(header_row)
+
+        device_row = QHBoxLayout()
+        device_row.setSpacing(10)
+        device_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        device_row.addWidget(self._create_field_label("输出"))
+
+        self._voice_output_device = NoWheelComboBox(self)
+        self._voice_output_device.setObjectName("voiceOutputSelect")
+        self._voice_output_device.setFixedHeight(CONTROL_HEIGHT)
+        self._configure_combo_width(self._voice_output_device)
+        self._apply_combo_popup_style(self._voice_output_device)
+        device_row.addWidget(self._voice_output_device, stretch=1)
+
+        self._refresh_outputs_button = QPushButton("刷新", self)
+        self._refresh_outputs_button.setObjectName("secondaryButton")
+        self._refresh_outputs_button.setFixedSize(64, CONTROL_HEIGHT)
+        self._refresh_outputs_button.clicked.connect(self._refresh_voice_output_options)
+        device_row.addWidget(self._refresh_outputs_button)
+        layout.addLayout(device_row)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self._create_field_label("音高"))
+
+        self._voice_pitch = NumberInput(-12, 12, width=64, parent=self)
+        row.addWidget(self._voice_pitch)
+        pitch_unit = QLabel("半音", self)
+        pitch_unit.setObjectName("unitSuffix")
+        row.addWidget(pitch_unit)
+
+        row.addSpacing(8)
+        row.addWidget(self._create_field_label("采样率"))
+        self._voice_output_sample_rate = NoWheelComboBox(self)
+        self._voice_output_sample_rate.setObjectName("voiceSampleRateSelect")
+        self._voice_output_sample_rate.setFixedHeight(CONTROL_HEIGHT)
+        self._voice_output_sample_rate.addItems(["16000 Hz", "44100 Hz", "48000 Hz"])
+        self._voice_output_sample_rate.setFixedWidth(150)
+        self._apply_combo_popup_style(self._voice_output_sample_rate)
+        row.addWidget(self._voice_output_sample_rate)
+        row.addStretch()
+        layout.addLayout(row)
+
+        effect_row = QHBoxLayout()
+        effect_row.setSpacing(10)
+        effect_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        effect_row.addWidget(self._create_field_label("混响"))
+        self._voice_reverb = NumberInput(0, 60, width=64, parent=self)
+        effect_row.addWidget(self._voice_reverb)
+        effect_row.addWidget(QLabel("%", self))
+
+        effect_row.addSpacing(8)
+        effect_row.addWidget(self._create_field_label("变声量"))
+        self._voice_wet = NumberInput(0, 100, width=64, parent=self)
+        effect_row.addWidget(self._voice_wet)
+        effect_row.addWidget(QLabel("%", self))
+
+        effect_row.addSpacing(8)
+        effect_row.addWidget(self._create_field_label("音量"))
+        self._voice_gain = NumberInput(0, 150, width=64, parent=self)
+        effect_row.addWidget(self._voice_gain)
+        effect_row.addWidget(QLabel("%", self))
+        effect_row.addStretch()
+        layout.addLayout(effect_row)
+
         return card
 
     def _build_model_card(self) -> QFrame:
@@ -609,6 +695,7 @@ class SettingsPage(QWidget):
             }
             QFrame#cameraCard,
             QFrame#microphoneCard,
+            QFrame#voiceChangerCard,
             QFrame#modelCard,
             QFrame#llmCard {
                 background: #FFFFFF;
@@ -663,7 +750,9 @@ class SettingsPage(QWidget):
             QComboBox#fpsSelect,
             QComboBox#cameraSelect,
             QComboBox#microphoneSelect,
-            QComboBox#sampleRateSelect {
+            QComboBox#sampleRateSelect,
+            QComboBox#voiceOutputSelect,
+            QComboBox#voiceSampleRateSelect {
                 background: #F8FAFC;
                 border: 1px solid #E2E8F0;
                 border-radius: 6px;
@@ -678,9 +767,28 @@ class SettingsPage(QWidget):
             QComboBox#fpsSelect:focus,
             QComboBox#cameraSelect:focus,
             QComboBox#microphoneSelect:focus,
-            QComboBox#sampleRateSelect:focus {
+            QComboBox#sampleRateSelect:focus,
+            QComboBox#voiceOutputSelect:focus,
+            QComboBox#voiceSampleRateSelect:focus {
                 border: 1px solid #2563EB;
                 background: #FFFFFF;
+            }
+            QCheckBox#voiceChangerToggle {
+                color: #1E293B;
+                font-size: 13px;
+                font-weight: 600;
+                spacing: 8px;
+            }
+            QCheckBox#voiceChangerToggle::indicator {
+                width: 16px;
+                height: 16px;
+                border: 1px solid #CBD5E1;
+                border-radius: 4px;
+                background: #FFFFFF;
+            }
+            QCheckBox#voiceChangerToggle::indicator:checked {
+                background: #2563EB;
+                border: 1px solid #2563EB;
             }
             QLineEdit#llmInput {
                 padding: 0 12px;
@@ -701,7 +809,9 @@ class SettingsPage(QWidget):
             QComboBox#fpsSelect,
             QComboBox#cameraSelect,
             QComboBox#microphoneSelect,
-            QComboBox#sampleRateSelect {
+            QComboBox#sampleRateSelect,
+            QComboBox#voiceOutputSelect,
+            QComboBox#voiceSampleRateSelect {
                 padding-left: 10px;
                 padding-right: 28px;
             }
@@ -784,6 +894,13 @@ class SettingsPage(QWidget):
         self._microphone_index.currentIndexChanged.connect(self._on_setting_changed)
         self._mic_sample_rate.currentTextChanged.connect(self._on_setting_changed)
         self._mic_block_size.valueChanged.connect(self._on_setting_changed)
+        self._voice_changer_enabled.stateChanged.connect(self._on_setting_changed)
+        self._voice_output_device.currentIndexChanged.connect(self._on_setting_changed)
+        self._voice_output_sample_rate.currentTextChanged.connect(self._on_setting_changed)
+        self._voice_pitch.valueChanged.connect(self._on_setting_changed)
+        self._voice_reverb.valueChanged.connect(self._on_setting_changed)
+        self._voice_wet.valueChanged.connect(self._on_setting_changed)
+        self._voice_gain.valueChanged.connect(self._on_setting_changed)
         self._model_path_edit.textChanged.connect(self._on_setting_changed)
         self._llm_base_url_edit.textChanged.connect(self._on_setting_changed)
         self._llm_api_key_edit.textChanged.connect(self._on_setting_changed)
@@ -802,6 +919,13 @@ class SettingsPage(QWidget):
             self._microphone_index,
             self._mic_sample_rate,
             self._mic_block_size,
+            self._voice_changer_enabled,
+            self._voice_output_device,
+            self._voice_output_sample_rate,
+            self._voice_pitch,
+            self._voice_reverb,
+            self._voice_wet,
+            self._voice_gain,
             self._model_path_edit,
             self._llm_base_url_edit,
             self._llm_api_key_edit,
@@ -812,11 +936,18 @@ class SettingsPage(QWidget):
 
         self._populate_camera_options(self._config.camera_index)
         self._populate_microphone_options(self._config.microphone_index)
+        self._populate_voice_output_options(self._config.voice_output_device_index)
         self._camera_width.setValue(self._config.camera_width)
         self._camera_height.setValue(self._config.camera_height)
         self._set_combo_value(self._camera_fps, f"{self._config.camera_fps} fps")
         self._set_combo_value(self._mic_sample_rate, f"{self._config.mic_sample_rate} Hz")
         self._mic_block_size.setValue(self._config.mic_block_size)
+        self._voice_changer_enabled.setChecked(self._config.voice_changer_enabled)
+        self._set_combo_value(self._voice_output_sample_rate, f"{self._config.voice_output_sample_rate} Hz")
+        self._voice_pitch.setValue(self._config.voice_pitch_semitones)
+        self._voice_reverb.setValue(self._config.voice_reverb_percent)
+        self._voice_wet.setValue(self._config.voice_wet_percent)
+        self._voice_gain.setValue(self._config.voice_output_gain_percent)
         self._model_path_edit.setText(self._config.model_paths.get(self._config.model_name, ""))
         self._llm_base_url_edit.setText(self._config.llm_base_url)
         self._llm_api_key_edit.setText(self._config.llm_api_key)
@@ -865,6 +996,32 @@ class SettingsPage(QWidget):
             self._microphone_index.setCurrentIndex(selected_row)
             self._config.microphone_index = int(selected_index)
 
+    def _populate_voice_output_options(self, selected_index: int | None) -> None:
+        """刷新变声器输出设备下拉项，并保留当前配置索引。"""
+        try:
+            devices = list_available_audio_output_devices()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("扫描音频输出设备失败：%s", exc)
+            devices = []
+
+        self._voice_output_device.clear()
+        self._voice_output_device.addItem("系统默认输出", None)
+        device_map = {index: name for index, name in devices}
+        for index, name in sorted(device_map.items()):
+            self._voice_output_device.addItem(f"{name}  [{index}]", index)
+
+        if selected_index is None:
+            self._voice_output_device.setCurrentIndex(0)
+            return
+
+        selected_row = self._voice_output_device.findData(selected_index)
+        if selected_row >= 0:
+            self._voice_output_device.setCurrentIndex(selected_row)
+            return
+
+        self._voice_output_device.addItem(f"输出设备 {selected_index}（未检测）", selected_index)
+        self._voice_output_device.setCurrentIndex(self._voice_output_device.count() - 1)
+
     def _refresh_camera_options(self) -> None:
         """手动重新扫描摄像头设备。"""
         selected_index = self._camera_index.currentData()
@@ -879,6 +1036,12 @@ class SettingsPage(QWidget):
         if selected_index is None:
             selected_index = self._config.microphone_index
         self._populate_microphone_options(int(selected_index))
+        self._on_setting_changed()
+
+    def _refresh_voice_output_options(self) -> None:
+        """手动重新扫描变声器输出设备。"""
+        selected_index = self._voice_output_device.currentData()
+        self._populate_voice_output_options(None if selected_index is None else int(selected_index))
         self._on_setting_changed()
 
     # ---- 设备测试 ----
@@ -1119,6 +1282,7 @@ class SettingsPage(QWidget):
         """控件值变更 -> 写入 AppConfig -> 通知外部。"""
         camera_index = self._camera_index.currentData()
         microphone_index = self._microphone_index.currentData()
+        voice_output_index = self._voice_output_device.currentData()
         if camera_index is not None:
             self._config.camera_index = int(camera_index)
         if microphone_index is not None:
@@ -1129,6 +1293,13 @@ class SettingsPage(QWidget):
         self._config.camera_fps = int(self._camera_fps.currentText().split()[0])
         self._config.mic_sample_rate = int(self._mic_sample_rate.currentText().split()[0])
         self._config.mic_block_size = self._mic_block_size.value()
+        self._config.voice_changer_enabled = self._voice_changer_enabled.isChecked()
+        self._config.voice_output_device_index = None if voice_output_index is None else int(voice_output_index)
+        self._config.voice_output_sample_rate = int(self._voice_output_sample_rate.currentText().split()[0])
+        self._config.voice_pitch_semitones = self._voice_pitch.value()
+        self._config.voice_reverb_percent = self._voice_reverb.value()
+        self._config.voice_wet_percent = self._voice_wet.value()
+        self._config.voice_output_gain_percent = self._voice_gain.value()
         self._config.model_paths[self._config.model_name] = self._model_path_edit.text().strip()
         self._config.llm_base_url = self._llm_base_url_edit.text().strip()
         self._config.llm_api_key = self._llm_api_key_edit.text().strip()
@@ -1137,7 +1308,7 @@ class SettingsPage(QWidget):
         self._set_config_valid(self._compute_config_validity())
 
         LOGGER.info(
-            "配置已更新：camera=%s %dx%d@%dfps mic=%s %sHz block=%s llm_configured=%s valid=%s",
+            "配置已更新：camera=%s %dx%d@%dfps mic=%s %sHz block=%s voice_changer=%s llm_configured=%s valid=%s",
             self._config.camera_index,
             self._config.camera_width,
             self._config.camera_height,
@@ -1145,6 +1316,7 @@ class SettingsPage(QWidget):
             self._config.microphone_index,
             self._config.mic_sample_rate,
             self._config.mic_block_size,
+            self._config.voice_changer_enabled,
             bool(self._config.llm_api_key and self._config.llm_model),
             self._is_config_valid,
         )
