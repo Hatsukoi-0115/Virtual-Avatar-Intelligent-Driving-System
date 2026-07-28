@@ -1,4 +1,4 @@
-"""Avatar Controller 融合层。
+﻿"""Avatar Controller 融合层。
 
 职责：
 - 接收视觉特征、情绪、语义等输入
@@ -57,7 +57,11 @@ class AvatarInputState:
     motion_priority: InputPriority = InputPriority.LOW
     """动作指令的优先级"""
 
-    # ---- 设备状态 ----
+    # ---- 动作中断 ----
+    interrupt_motion: bool = False
+    """为 True 时通知渲染层立即停止当前动作，用于人脸重新检测到时打断待机动作"""
+
+   # ---- 设备状态 ----
     device_status: dict[str, str] = field(default_factory=dict)
     """各设备当前状态，键为设备名，值为 'ok' / 'error' / 'disconnected'"""
 
@@ -100,6 +104,10 @@ class AvatarOutputState:
 
     motion_index: int = 0
     """动作组内的索引"""
+
+    # ---- 动作中断 ----
+    interrupt_motion: bool = False
+    """为 True 时通知渲染层立即停止当前动作"""
 
 
 class AvatarController:
@@ -188,6 +196,11 @@ class AvatarController:
         # 动作指令
         output.motion_group = self._input.motion_group
         output.motion_index = self._input.motion_index
+
+        # 动作中断指令
+        output.interrupt_motion = self._input.interrupt_motion
+        # 中断是一次性脉冲，透传后立即清除，避免持续中断
+        self._input.interrupt_motion = False
 
         return output
 

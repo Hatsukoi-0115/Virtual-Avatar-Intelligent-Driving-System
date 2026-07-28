@@ -375,18 +375,30 @@ def main() -> None:
     _IDLE_COOLDOWN = 3.0
     _last_idle_trigger_time = 0.0
     _face_was_detected = False
+    # 标记当前是否处于待机状态（面部丢失后已触发 Idle 动作）
+    _in_idle_state = False
     _idle_labels = get_idle_labels(config.model_name)
 
     def _consume_features() -> None:
-        nonlocal latest_expression, _face_was_detected, _last_idle_trigger_time
+        nonlocal latest_expression, _face_was_detected, _last_idle_trigger_time, _in_idle_state
         packets = inferencer.pop_features()
         if not packets:
             return
         latest = packets[-1]
+        # 人脸重新检测到：打断待机动作，恢复实时驱动
+        if _in_idle_state and latest.face_detected:
+            _in_idle_state = False
+            avatar_controller._input.interrupt_motion = True
+            avatar_controller._input.motion_group = ""
+            avatar_controller._input.motion_index = 0
+            logger.info("人脸重新检测到，打断待机动作，恢复实时驱动")
+            main_window.update_current_action("实时驱动")
+
         # 面部丢失时触发随机 Idle 待机动作（冷却时间内不重复触发）
         now = time.monotonic()
-        if _face_was_detected and not latest.face_detected and (now - _last_idle_trigger_time) >= _IDLE_COOLDOWN:
+        if _face_was_detected and not latest.face_detected and (now - _last_idle_trigger_time) >= _IDLE_COOLDOWN and not _in_idle_state:
             _last_idle_trigger_time = now
+            _in_idle_state = True
             idle_label = random.choice(_idle_labels)
             logger.info("面部丢失，触发随机 Idle 动作：%s", idle_label)
             main_window.update_current_action(idle_label)
