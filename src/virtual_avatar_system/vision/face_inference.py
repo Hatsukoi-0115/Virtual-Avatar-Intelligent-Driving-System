@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Final
+from typing import Callable, Final
 from urllib.request import urlopen
 
 import cv2
@@ -85,13 +85,18 @@ class FaceLandmarkInferencer:
         self._thread.start()
         LOGGER.info("MediaPipe 推理器已启动")
 
-    def stop(self) -> None:
+    def stop(self, progress_callback: Callable[[], None] | None = None) -> None:
         """停止推理并释放模型。"""
         self._running = False
         with self._input_condition:
             self._input_condition.notify_all()
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=3.0)
+            deadline = time.monotonic() + 3.0
+            while self._thread.is_alive() and time.monotonic() < deadline:
+                # 分段等待，让停止直播加载页可以继续刷新动态图标。
+                self._thread.join(timeout=0.05)
+                if progress_callback is not None:
+                    progress_callback()
         if self._landmarker:
             self._landmarker.close()
         LOGGER.info("MediaPipe 推理器已释放")

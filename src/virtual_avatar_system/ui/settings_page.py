@@ -10,17 +10,20 @@ from __future__ import annotations
 
 import logging
 import contextlib
+import json
 import threading
+import time
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QColor, QIntValidator, QPalette
+from PySide6.QtCore import QSize, Signal, Qt
+from PySide6.QtGui import QColor, QIcon, QIntValidator, QPalette
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -40,8 +43,10 @@ from virtual_avatar_system.config.app_config import (
 from virtual_avatar_system.vision.camera_source import list_available_camera_indices
 
 LOGGER = logging.getLogger(__name__)
-CONTROL_HEIGHT = 36
-LABEL_WIDTH = 65
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+CONTROL_HEIGHT = 40
+LABEL_WIDTH = 70
+SETTINGS_CONTENT_MAX_WIDTH = 580
 
 
 class NoWheelComboBox(QComboBox):
@@ -50,6 +55,43 @@ class NoWheelComboBox(QComboBox):
     def wheelEvent(self, event) -> None:
         """忽略滚轮事件，避免滚动页面时改掉配置。"""
         event.ignore()
+
+
+class NumberComboBox(NoWheelComboBox):
+    """用于分辨率数值选择的下拉框。"""
+
+    valueChanged = Signal(int)
+
+    def __init__(
+        self,
+        values: tuple[int, ...],
+        width: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("resolutionSelect")
+        self.setFixedSize(width, CONTROL_HEIGHT)
+        self.addItems([str(value) for value in values])
+        self.currentTextChanged.connect(self._on_text_changed)
+
+    def value(self) -> int:
+        """读取当前下拉数值。"""
+        return int(self.currentText())
+
+    def setValue(self, value: int) -> None:
+        """设置下拉数值，配置中不存在时自动补入。"""
+        text = str(value)
+        index = self.findText(text)
+        if index < 0:
+            self.addItem(text)
+            index = self.findText(text)
+        self.setCurrentIndex(index)
+
+    def _on_text_changed(self, text: str) -> None:
+        """把文本变化转换成数值信号。"""
+        if self.signalsBlocked() or not text:
+            return
+        self.valueChanged.emit(int(text))
 
 
 class NumberInput(QLineEdit):
@@ -107,8 +149,8 @@ class UnitInput(QFrame):
         self.setFixedSize(112, CONTROL_HEIGHT)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 0, 10, 0)
-        layout.setSpacing(6)
+        layout.setContentsMargins(12, 0, 0, 0)
+        layout.setSpacing(0)
 
         self._line_edit = QLineEdit(self)
         self._line_edit.setObjectName("unitInputEdit")
@@ -120,7 +162,7 @@ class UnitInput(QFrame):
         unit_label = QLabel(unit, self)
         unit_label.setObjectName("unitSuffix")
         unit_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        unit_label.setFixedWidth(18)
+        unit_label.setFixedWidth(42)
         layout.addWidget(unit_label)
 
     def value(self) -> int:
@@ -142,6 +184,76 @@ class UnitInput(QFrame):
         self.valueChanged.emit(self.value())
 
 
+class SettingsNavItem(QFrame):
+    """左侧配置导航项，支持标题和说明使用不同字号。"""
+
+    clicked = Signal()
+
+    def __init__(
+        self,
+        icon: QIcon,
+        title: str,
+        description: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._checked = False
+        self.setObjectName("settingsNavButton")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(56)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(8)
+        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        self._icon_label = QLabel(self)
+        self._icon_label.setObjectName("settingsNavIcon")
+        self._icon_label.setPixmap(icon.pixmap(QSize(21, 21)))
+        self._icon_label.setFixedSize(24, 24)
+        self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._icon_label, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(0)
+
+        self._title_label = QLabel(title, self)
+        self._title_label.setObjectName("settingsNavTitle")
+        self._title_label.setFixedHeight(22)
+        self._title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        text_layout.addWidget(self._title_label)
+
+        self._description_label = QLabel(description, self)
+        self._description_label.setObjectName("settingsNavDescription")
+        self._description_label.setWordWrap(False)
+        self._description_label.setFixedHeight(16)
+        self._description_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        text_layout.addWidget(self._description_label)
+
+        layout.addLayout(text_layout, stretch=1)
+
+    def setChecked(self, checked: bool) -> None:
+        """同步选中态到导航项和内部文字。"""
+        self._checked = checked
+        for widget in (self, self._title_label, self._description_label):
+            widget.setProperty("active", checked)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+    def isChecked(self) -> bool:
+        """返回当前导航项是否选中。"""
+        return self._checked
+
+    def mousePressEvent(self, event) -> None:
+        """点击导航项时发出切换信号。"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 class SettingsPage(QWidget):
     """应用设置页。
 
@@ -157,7 +269,14 @@ class SettingsPage(QWidget):
         self._is_config_valid = False
         self._camera_test_running = False
         self._microphone_test_running = False
+        self._model_test_running = False
         self._llm_test_running = False
+        self._test_results = {
+            "camera": "idle",
+            "microphone": "idle",
+            "model": "idle",
+            "llm": "idle",
+        }
         self._on_config_changed_callbacks: list[Callable[[AppConfig], None]] = []
 
         self._setup_ui()
@@ -186,10 +305,12 @@ class SettingsPage(QWidget):
 
         self._settings_stack = QStackedWidget(self)
         self._settings_stack.setObjectName("settingsContentStack")
+        self._settings_stack.setMaximumWidth(SETTINGS_CONTENT_MAX_WIDTH)
         self._settings_stack.addWidget(self._build_device_config_page())
         self._settings_stack.addWidget(self._build_avatar_model_page())
         self._settings_stack.addWidget(self._build_llm_config_page())
         outer_layout.addWidget(self._settings_stack, stretch=1)
+        outer_layout.addStretch()
 
         self._apply_styles()
         self._set_active_settings_panel(0)
@@ -199,22 +320,54 @@ class SettingsPage(QWidget):
         """创建左侧配置分类导航。"""
         sidebar = QFrame(self)
         sidebar.setObjectName("settingsSidebar")
-        sidebar.setFixedWidth(148)
+        sidebar.setFixedWidth(178)
+        sidebar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(10, 12, 10, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 10)
+        layout.setSpacing(7)
 
-        self._settings_nav_buttons: list[QPushButton] = []
-        for index, text in enumerate(("设备配置", "人物模型配置", "LLM模型配置")):
-            button = QPushButton(text, self)
-            button.setObjectName("settingsNavButton")
-            button.setCheckable(True)
-            button.setMinimumHeight(38)
-            button.clicked.connect(lambda _checked=False, page_index=index: self._set_active_settings_panel(page_index))
-            layout.addWidget(button)
-            self._settings_nav_buttons.append(button)
+        self._settings_nav_buttons: list[SettingsNavItem] = []
+        nav_items = (
+            ("camera.svg", "设备配置", "摄像头与麦克风设置"),
+            ("user.svg", "人物模型配置", "3D模型与动作设置"),
+            ("robot.svg", "LLM模型配置", "语言模型与对话设置"),
+        )
+        for index, (icon_name, title, description) in enumerate(nav_items):
+            nav_item = SettingsNavItem(self._asset_icon(icon_name), title, description, self)
+            nav_item.clicked.connect(lambda page_index=index: self._set_active_settings_panel(page_index))
+            layout.addWidget(nav_item)
+            self._settings_nav_buttons.append(nav_item)
 
         layout.addStretch()
+
+        status_card = QFrame(self)
+        status_card.setObjectName("sidebarStatusCard")
+        status_layout = QGridLayout(status_card)
+        status_layout.setContentsMargins(12, 11, 10, 11)
+        status_layout.setHorizontalSpacing(6)
+        status_layout.setVerticalSpacing(7)
+        status_layout.setColumnStretch(0, 1)
+
+        status_title = QLabel("系统状态", self)
+        status_title.setObjectName("sidebarStatusTitle")
+        status_layout.addWidget(status_title, 0, 0, 1, 2)
+
+        self._sidebar_status_label = QLabel("● 未就绪", self)
+        self._sidebar_status_label.setObjectName("sidebarStatusLabel")
+        self._sidebar_status_label.setProperty("state", "idle")
+        status_layout.addWidget(self._sidebar_status_label, 1, 0)
+
+        self._sidebar_status_detail = QLabel("所有设备连接正常", self)
+        self._sidebar_status_detail.setObjectName("sidebarStatusDetail")
+        self._sidebar_status_detail.setWordWrap(True)
+        status_layout.addWidget(self._sidebar_status_detail, 2, 0, 1, 2)
+
+        watermark = QLabel(self)
+        watermark.setObjectName("sidebarStatusWatermark")
+        watermark.setPixmap(self._asset_icon("shield-watermark.svg").pixmap(QSize(58, 58)))
+        watermark.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        status_layout.addWidget(watermark, 1, 1, 2, 1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        layout.addWidget(status_card)
         return sidebar
 
     def _build_device_config_page(self) -> QWidget:
@@ -223,7 +376,7 @@ class SettingsPage(QWidget):
         page.setObjectName("settingsPanelPage")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
         layout.addWidget(self._build_camera_card())
         layout.addWidget(self._build_microphone_card())
         layout.addStretch()
@@ -265,76 +418,98 @@ class SettingsPage(QWidget):
         card = self._create_card("cameraCard")
         layout = self._create_card_layout(card)
 
-        title = QLabel("摄像头参数", self)
-        title.setObjectName("cardTitle")
-        layout.addWidget(title)
+        self._add_card_header(layout, "camera.svg", "摄像头参数", "配置摄像头分辨率、帧率等参数")
 
-        device_row = QHBoxLayout()
-        device_row.setSpacing(10)
-        device_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        device_row.addWidget(self._create_field_label("摄像头"))
+        form = QGridLayout()
+        form.setContentsMargins(0, 2, 0, 0)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
+        form.setColumnMinimumWidth(0, LABEL_WIDTH)
+        form.setColumnStretch(1, 1)
 
         self._camera_index = NoWheelComboBox(self)
         self._camera_index.setObjectName("cameraSelect")
         self._camera_index.setFixedHeight(CONTROL_HEIGHT)
         self._configure_combo_width(self._camera_index)
         self._apply_combo_popup_style(self._camera_index)
-        device_row.addWidget(self._camera_index, stretch=1)
 
         self._refresh_cameras_button = QPushButton("刷新", self)
-        self._refresh_cameras_button.setObjectName("secondaryButton")
-        self._refresh_cameras_button.setFixedSize(64, CONTROL_HEIGHT)
+        self._refresh_cameras_button.setObjectName("refreshIconButton")
+        self._refresh_cameras_button.setIcon(self._asset_icon("refresh.svg"))
+        self._refresh_cameras_button.setIconSize(QSize(18, 18))
+        self._refresh_cameras_button.setToolTip("刷新摄像头列表")
+        self._refresh_cameras_button.setFixedSize(76, CONTROL_HEIGHT)
         self._refresh_cameras_button.clicked.connect(self._refresh_camera_options)
+
+        device_row = QHBoxLayout()
+        device_row.setContentsMargins(0, 0, 0, 0)
+        device_row.setSpacing(10)
+        device_row.addWidget(self._camera_index, stretch=1)
         device_row.addWidget(self._refresh_cameras_button)
-        layout.addLayout(device_row)
+        form.addWidget(self._create_field_label("摄像头"), 0, 0)
+        form.addLayout(device_row, 0, 1)
 
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
         row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        row.addWidget(self._create_field_label("分辨率"))
 
-        self._camera_width = NumberInput(320, 3840, parent=self)
+        self._camera_width = NumberComboBox((320, 640, 800, 1280, 1920), width=96, parent=self)
+        self._apply_combo_popup_style(self._camera_width)
         row.addWidget(self._camera_width)
 
         separator = QLabel("×", self)
         separator.setObjectName("resolutionSeparator")
         separator.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        separator.setFixedWidth(12)
+        separator.setFixedWidth(18)
         row.addWidget(separator)
 
-        self._camera_height = NumberInput(240, 2160, parent=self)
+        self._camera_height = NumberComboBox((240, 480, 600, 720, 1080), width=96, parent=self)
+        self._apply_combo_popup_style(self._camera_height)
         row.addWidget(self._camera_height)
 
-        row.addSpacing(6)
-        row.addWidget(self._create_field_label("帧率"))
+        row.addSpacing(4)
+        fps_label = QLabel("帧率", self)
+        fps_label.setObjectName("inlineFieldLabel")
+        row.addWidget(fps_label)
 
         self._camera_fps = NoWheelComboBox(self)
         self._camera_fps.setObjectName("fpsSelect")
         self._camera_fps.setFixedHeight(CONTROL_HEIGHT)
-        self._camera_fps.addItems(["60 fps", "30 fps", "24 fps", "15 fps"])
+        self._camera_fps.addItems(["60 FPS", "30 FPS", "24 FPS", "15 FPS"])
         self._configure_combo_width(self._camera_fps)
         self._apply_combo_popup_style(self._camera_fps)
-        row.addWidget(self._camera_fps, stretch=1)
+        self._camera_fps.setFixedWidth(124)
+        row.addWidget(self._camera_fps)
+        row.addStretch()
 
-        layout.addLayout(row)
+        form.addWidget(self._create_field_label("分辨率"), 1, 0)
+        form.addLayout(row, 1, 1)
 
         test_row = QHBoxLayout()
-        test_row.setSpacing(10)
+        test_row.setContentsMargins(0, 0, 0, 0)
+        test_row.setSpacing(12)
         test_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        test_row.addWidget(self._create_field_label("连接测试"))
 
         self._camera_test_button = QPushButton("测试摄像头", self)
-        self._camera_test_button.setObjectName("secondaryButton")
-        self._camera_test_button.setFixedHeight(CONTROL_HEIGHT)
+        self._camera_test_button.setObjectName("testButton")
+        self._camera_test_button.setIcon(self._asset_icon("camera.svg"))
+        self._camera_test_button.setIconSize(QSize(18, 18))
+        self._camera_test_button.setFixedSize(120, CONTROL_HEIGHT)
         self._camera_test_button.clicked.connect(self._start_camera_test)
         test_row.addWidget(self._camera_test_button)
 
-        self._camera_test_status = QLabel("未测试", self)
+        self._camera_test_status = QLabel("● 未测试", self)
         self._camera_test_status.setObjectName("deviceTestStatus")
         self._camera_test_status.setProperty("result", "idle")
-        self._camera_test_status.setWordWrap(True)
-        test_row.addWidget(self._camera_test_status, stretch=1)
-        layout.addLayout(test_row)
+        self._camera_test_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._camera_test_status.setFixedHeight(30)
+        test_row.addWidget(self._camera_test_status)
+        test_row.addStretch()
+        form.addWidget(self._create_field_label("连接测试"), 2, 0)
+        form.addLayout(test_row, 2, 1)
+
+        layout.addLayout(form)
         return card
 
     def _build_microphone_card(self) -> QFrame:
@@ -342,33 +517,41 @@ class SettingsPage(QWidget):
         card = self._create_card("microphoneCard")
         layout = self._create_card_layout(card)
 
-        title = QLabel("麦克风参数", self)
-        title.setObjectName("cardTitle")
-        layout.addWidget(title)
+        self._add_card_header(layout, "microphone.svg", "麦克风参数", "配置麦克风采样率、缓冲大小等参数")
 
-        device_row = QHBoxLayout()
-        device_row.setSpacing(10)
-        device_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        device_row.addWidget(self._create_field_label("麦克风"))
+        form = QGridLayout()
+        form.setContentsMargins(0, 2, 0, 0)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
+        form.setColumnMinimumWidth(0, LABEL_WIDTH)
+        form.setColumnStretch(1, 1)
 
         self._microphone_index = NoWheelComboBox(self)
         self._microphone_index.setObjectName("microphoneSelect")
         self._microphone_index.setFixedHeight(CONTROL_HEIGHT)
         self._configure_combo_width(self._microphone_index)
         self._apply_combo_popup_style(self._microphone_index)
-        device_row.addWidget(self._microphone_index, stretch=1)
 
         self._refresh_microphones_button = QPushButton("刷新", self)
-        self._refresh_microphones_button.setObjectName("secondaryButton")
-        self._refresh_microphones_button.setFixedSize(64, CONTROL_HEIGHT)
+        self._refresh_microphones_button.setObjectName("refreshIconButton")
+        self._refresh_microphones_button.setIcon(self._asset_icon("refresh.svg"))
+        self._refresh_microphones_button.setIconSize(QSize(18, 18))
+        self._refresh_microphones_button.setToolTip("刷新麦克风列表")
+        self._refresh_microphones_button.setFixedSize(76, CONTROL_HEIGHT)
         self._refresh_microphones_button.clicked.connect(self._refresh_microphone_options)
+
+        device_row = QHBoxLayout()
+        device_row.setContentsMargins(0, 0, 0, 0)
+        device_row.setSpacing(10)
+        device_row.addWidget(self._microphone_index, stretch=1)
         device_row.addWidget(self._refresh_microphones_button)
-        layout.addLayout(device_row)
+        form.addWidget(self._create_field_label("麦克风"), 0, 0)
+        form.addLayout(device_row, 0, 1)
 
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
         row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        row.addWidget(self._create_field_label("采样率"))
 
         self._mic_sample_rate = NoWheelComboBox(self)
         self._mic_sample_rate.setObjectName("sampleRateSelect")
@@ -376,32 +559,43 @@ class SettingsPage(QWidget):
         self._mic_sample_rate.addItems(["16000 Hz", "44100 Hz", "48000 Hz"])
         self._configure_combo_width(self._mic_sample_rate)
         self._apply_combo_popup_style(self._mic_sample_rate)
-        self._mic_sample_rate.setFixedWidth(170)
+        self._mic_sample_rate.setFixedWidth(158)
         row.addWidget(self._mic_sample_rate)
 
-        row.addWidget(self._create_field_label("块大小"))
+        block_label = QLabel("块大小", self)
+        block_label.setObjectName("inlineFieldLabel")
+        row.addWidget(block_label)
         self._mic_block_size = UnitInput("B", 320, 8192, self)
+        self._mic_block_size.setFixedWidth(128)
         row.addWidget(self._mic_block_size)
         row.addStretch()
-        layout.addLayout(row)
+        form.addWidget(self._create_field_label("采样率"), 1, 0)
+        form.addLayout(row, 1, 1)
 
         test_row = QHBoxLayout()
-        test_row.setSpacing(10)
+        test_row.setContentsMargins(0, 0, 0, 0)
+        test_row.setSpacing(12)
         test_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        test_row.addWidget(self._create_field_label("连接测试"))
 
         self._microphone_test_button = QPushButton("测试麦克风", self)
-        self._microphone_test_button.setObjectName("secondaryButton")
-        self._microphone_test_button.setFixedHeight(CONTROL_HEIGHT)
+        self._microphone_test_button.setObjectName("testButton")
+        self._microphone_test_button.setIcon(self._asset_icon("microphone.svg"))
+        self._microphone_test_button.setIconSize(QSize(18, 18))
+        self._microphone_test_button.setFixedSize(120, CONTROL_HEIGHT)
         self._microphone_test_button.clicked.connect(self._start_microphone_test)
         test_row.addWidget(self._microphone_test_button)
 
-        self._microphone_test_status = QLabel("未测试", self)
+        self._microphone_test_status = QLabel("● 未测试", self)
         self._microphone_test_status.setObjectName("deviceTestStatus")
         self._microphone_test_status.setProperty("result", "idle")
-        self._microphone_test_status.setWordWrap(True)
-        test_row.addWidget(self._microphone_test_status, stretch=1)
-        layout.addLayout(test_row)
+        self._microphone_test_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._microphone_test_status.setFixedHeight(30)
+        test_row.addWidget(self._microphone_test_status)
+        test_row.addStretch()
+        form.addWidget(self._create_field_label("连接测试"), 2, 0)
+        form.addLayout(test_row, 2, 1)
+
+        layout.addLayout(form)
         return card
 
     def _build_model_card(self) -> QFrame:
@@ -442,6 +636,27 @@ class SettingsPage(QWidget):
         self._model_path_error.setObjectName("errorLabel")
         self._model_path_error.setVisible(False)
         layout.addWidget(self._model_path_error)
+
+        test_row = QHBoxLayout()
+        test_row.setSpacing(10)
+        test_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        test_row.addWidget(self._create_field_label("连接测试"))
+
+        self._model_test_button = QPushButton("测试人物模型", self)
+        self._model_test_button.setObjectName("secondaryButton")
+        self._model_test_button.setIcon(self._asset_icon("user.svg"))
+        self._model_test_button.setIconSize(QSize(18, 18))
+        self._model_test_button.setFixedHeight(CONTROL_HEIGHT)
+        self._model_test_button.clicked.connect(self._start_model_test)
+        test_row.addWidget(self._model_test_button)
+
+        self._model_test_status = QLabel("● 未测试", self)
+        self._model_test_status.setObjectName("deviceTestStatus")
+        self._model_test_status.setProperty("result", "idle")
+        self._model_test_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._model_test_status.setFixedHeight(28)
+        test_row.addWidget(self._model_test_status, stretch=1)
+        layout.addLayout(test_row)
         return card
 
     def _build_llm_card(self) -> QFrame:
@@ -493,10 +708,11 @@ class SettingsPage(QWidget):
         self._llm_test_button.clicked.connect(self._start_llm_test)
         test_row.addWidget(self._llm_test_button)
 
-        self._llm_test_status = QLabel("未测试", self)
+        self._llm_test_status = QLabel("● 未测试", self)
         self._llm_test_status.setObjectName("deviceTestStatus")
         self._llm_test_status.setProperty("result", "idle")
-        self._llm_test_status.setWordWrap(True)
+        self._llm_test_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._llm_test_status.setFixedHeight(28)
         test_row.addWidget(self._llm_test_status, stretch=1)
         layout.addLayout(test_row)
 
@@ -510,18 +726,56 @@ class SettingsPage(QWidget):
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(16)
-        shadow.setOffset(0, 4)
-        shadow.setColor(QColor(15, 23, 42, 14))
+        shadow.setBlurRadius(14)
+        shadow.setOffset(0, 3)
+        shadow.setColor(QColor(15, 23, 42, 12))
         card.setGraphicsEffect(shadow)
         return card
 
     def _create_card_layout(self, card: QFrame) -> QVBoxLayout:
         """创建卡片内部统一布局。"""
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 16, 18, 18)
-        layout.setSpacing(13)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(11)
         return layout
+
+    def _asset_icon(self, icon_name: str) -> QIcon:
+        """读取本地 SVG 图标资产。"""
+        return QIcon(str(ASSETS_DIR / icon_name))
+
+    def _add_card_header(self, layout: QVBoxLayout, icon_name: str, title: str, description: str) -> None:
+        """添加带图标和说明的卡片标题区。"""
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(13)
+
+        icon_badge = QFrame(self)
+        icon_badge.setObjectName("cardIconBadge")
+        icon_badge.setFixedSize(38, 38)
+        icon_layout = QVBoxLayout(icon_badge)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+
+        icon = QLabel(self)
+        icon.setObjectName("cardIconText")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setPixmap(self._asset_icon(icon_name).pixmap(QSize(20, 20)))
+        icon_layout.addWidget(icon)
+        header.addWidget(icon_badge)
+
+        text_group = QVBoxLayout()
+        text_group.setContentsMargins(0, 0, 0, 0)
+        text_group.setSpacing(3)
+
+        title_label = QLabel(title, self)
+        title_label.setObjectName("cardTitle")
+        text_group.addWidget(title_label)
+
+        description_label = QLabel(description, self)
+        description_label.setObjectName("cardDescription")
+        text_group.addWidget(description_label)
+        header.addLayout(text_group, stretch=1)
+
+        layout.addLayout(header)
 
     def _create_field_label(self, text: str) -> QLabel:
         """创建固定列宽字段标签。"""
@@ -534,6 +788,7 @@ class SettingsPage(QWidget):
     def _configure_combo_width(self, combo_box: QComboBox) -> None:
         """避免长设备名把卡片撑破。"""
         combo_box.setMinimumWidth(0)
+        combo_box.setIconSize(QSize(18, 18))
         combo_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         combo_box.setMinimumContentsLength(8)
         combo_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -585,45 +840,111 @@ class SettingsPage(QWidget):
                 border: 0;
             }
             QFrame#settingsSidebar {
-                background: #FFFFFF;
-                border: 1px solid #E5E7EB;
-                border-radius: 8px;
+                background: rgba(255, 255, 255, 248);
+                border: 1px solid #E2E8F0;
+                border-radius: 12px;
             }
-            QPushButton#settingsNavButton {
+            QFrame#settingsNavButton {
                 background: transparent;
                 border: 0;
                 border-radius: 8px;
-                color: #475569;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 0 12px;
-                text-align: left;
             }
-            QPushButton#settingsNavButton:hover {
-                background: #F1F5F9;
+            QFrame#settingsNavButton:hover {
+                background: #F6FAFF;
+            }
+            QFrame#settingsNavButton[active="true"] {
+                background: #EAF5FF;
+                border: 0;
+            }
+            QLabel#settingsNavIcon {
+                background: transparent;
+                border: 0;
+            }
+            QLabel#settingsNavTitle {
+                background: transparent;
+                border: 0;
                 color: #0F172A;
+                font-size: 16px;
+                font-weight: 800;
+                padding: 0;
             }
-            QPushButton#settingsNavButton[active="true"] {
-                background: #EFF6FF;
-                color: #2563EB;
+            QLabel#settingsNavTitle[active="true"] {
+                color: #1677FF;
+            }
+            QLabel#settingsNavDescription {
+                background: transparent;
+                border: 0;
+                color: #64748B;
+                font-size: 11px;
+                font-weight: 500;
+                padding: 0;
+            }
+            QLabel#settingsNavDescription[active="true"] {
+                color: #1677FF;
+            }
+            QFrame#sidebarStatusCard {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #F6FAFF, stop:1 #EFF6FF);
+                border: 1px solid #DBEAFE;
+                border-radius: 10px;
+            }
+            QLabel#sidebarStatusTitle {
+                color: #0F172A;
+                font-size: 13px;
+                font-weight: 800;
+            }
+            QLabel#sidebarStatusLabel {
+                color: #DC2626;
+                font-size: 12px;
+                font-weight: 800;
+            }
+            QLabel#sidebarStatusLabel[state="ready"] {
+                color: #52C41A;
+            }
+            QLabel#sidebarStatusDetail {
+                color: #64748B;
+                font-size: 11px;
+                font-weight: 500;
+            }
+            QLabel#sidebarStatusWatermark {
+                background: transparent;
+                border: 0;
             }
             QFrame#cameraCard,
             QFrame#microphoneCard,
             QFrame#modelCard,
             QFrame#llmCard {
                 background: #FFFFFF;
-                border: 1px solid #E5E7EB;
+                border: 1px solid #E5EAF2;
+                border-radius: 12px;
+            }
+            QFrame#cardIconBadge {
+                background: #E6F4FF;
+                border: 0;
                 border-radius: 8px;
+            }
+            QLabel#cardIconText {
+                background: transparent;
+                border: 0;
             }
             QLabel#cardTitle {
                 color: #0F172A;
+                font-size: 19px;
+                font-weight: 800;
+            }
+            QLabel#cardDescription {
+                color: #64748B;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            QLabel#fieldLabel {
+                color: #172033;
                 font-size: 14px;
                 font-weight: 700;
             }
-            QLabel#fieldLabel {
-                color: #475569;
-                font-size: 13px;
-                font-weight: 400;
+            QLabel#inlineFieldLabel {
+                color: #172033;
+                font-size: 14px;
+                font-weight: 700;
             }
             QLabel#subLabel {
                 color: #475569;
@@ -637,68 +958,80 @@ class SettingsPage(QWidget):
             }
             QLabel#deviceTestStatus {
                 color: #64748B;
-                font-size: 12px;
-                padding: 0 2px;
+                background: #F8FAFC;
+                border: 1px solid #E2E8F0;
+                border-radius: 14px;
+                font-size: 14px;
+                font-weight: 700;
+                padding: 0 10px;
             }
             QLabel#deviceTestStatus[result="success"] {
+                background: #ECFDF5;
+                border: 1px solid #BBF7D0;
                 color: #059669;
-                font-weight: 600;
             }
             QLabel#deviceTestStatus[result="error"] {
+                background: #FEF2F2;
+                border: 1px solid #FECACA;
                 color: #DC2626;
-                font-weight: 600;
             }
             QLabel#deviceTestStatus[result="testing"] {
+                background: #EFF6FF;
+                border: 1px solid #BFDBFE;
                 color: #2563EB;
-                font-weight: 600;
             }
             QLabel#resolutionSeparator {
                 color: #94A3B8;
-                font-size: 13px;
+                font-size: 18px;
                 font-weight: 700;
             }
             QLineEdit#numberInput,
             QLineEdit#llmInput,
             QFrame#unitInput,
+            QComboBox#resolutionSelect,
             QComboBox#fpsSelect,
             QComboBox#cameraSelect,
             QComboBox#microphoneSelect,
             QComboBox#sampleRateSelect {
-                background: #F8FAFC;
-                border: 1px solid #E2E8F0;
+                background: #FFFFFF;
+                border: 1px solid #DDE3EA;
                 border-radius: 6px;
-                color: #1E293B;
-                font-size: 13px;
+                color: #0F172A;
+                font-size: 14px;
             }
             QLineEdit#numberInput {
                 padding: 0 10px;
             }
             QLineEdit#numberInput:focus,
             QLineEdit#llmInput:focus,
+            QComboBox#resolutionSelect:focus,
             QComboBox#fpsSelect:focus,
             QComboBox#cameraSelect:focus,
             QComboBox#microphoneSelect:focus,
             QComboBox#sampleRateSelect:focus {
-                border: 1px solid #2563EB;
+                border: 1px solid #4096FF;
                 background: #FFFFFF;
             }
             QLineEdit#llmInput {
                 padding: 0 12px;
-                min-height: 36px;
+                min-height: 46px;
             }
             QLineEdit#unitInputEdit {
                 background: transparent;
                 border: 0;
                 color: #1E293B;
-                font-size: 13px;
+                font-size: 14px;
                 padding: 0;
             }
             QLabel#unitSuffix {
+                background: #FAFAFA;
+                border-left: 1px solid #D9D9D9;
                 color: #64748B;
-                font-size: 12px;
+                font-size: 14px;
                 font-weight: 600;
             }
             QComboBox#fpsSelect,
+            QComboBox#resolutionSelect,
             QComboBox#cameraSelect,
             QComboBox#microphoneSelect,
             QComboBox#sampleRateSelect {
@@ -707,7 +1040,7 @@ class SettingsPage(QWidget):
             }
             QComboBox::drop-down {
                 border: 0;
-                width: 28px;
+                width: 34px;
             }
             QComboBox::down-arrow {
                 image: url("__CHEVRON_PATH__");
@@ -755,21 +1088,39 @@ class SettingsPage(QWidget):
                 padding: 0 14px;
             }
             QPushButton#browseButton:hover,
-            QPushButton#secondaryButton:hover {
-                background: #E2E8F0;
+            QPushButton#secondaryButton:hover,
+            QPushButton#testButton:hover,
+            QPushButton#refreshIconButton:hover {
+                background: #EEF6FF;
+                border-color: #9CCBFF;
             }
             QPushButton#browseButton:pressed,
-            QPushButton#secondaryButton:pressed {
+            QPushButton#secondaryButton:pressed,
+            QPushButton#testButton:pressed,
+            QPushButton#refreshIconButton:pressed {
                 background: #CBD5E1;
             }
-            QPushButton#secondaryButton {
-                background: #FFFFFF;
-                border: 1px solid #E2E8F0;
+            QPushButton#secondaryButton,
+            QPushButton#testButton {
+                background: #F8FAFC;
+                border: 1px solid #CBD5E1;
                 border-radius: 6px;
-                color: #1E293B;
+                color: #0F5FD7;
                 font-size: 13px;
-                font-weight: 600;
-                padding: 0 10px;
+                font-weight: 700;
+                padding: 0 14px;
+            }
+            QPushButton#testButton {
+                min-width: 126px;
+            }
+            QPushButton#refreshIconButton {
+                background: #F8FAFC;
+                border: 1px solid #D6E2F0;
+                border-radius: 6px;
+                color: #0F2748;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 0;
             }
             """
         )
@@ -814,7 +1165,7 @@ class SettingsPage(QWidget):
         self._populate_microphone_options(self._config.microphone_index)
         self._camera_width.setValue(self._config.camera_width)
         self._camera_height.setValue(self._config.camera_height)
-        self._set_combo_value(self._camera_fps, f"{self._config.camera_fps} fps")
+        self._set_combo_value(self._camera_fps, f"{self._config.camera_fps} FPS")
         self._set_combo_value(self._mic_sample_rate, f"{self._config.mic_sample_rate} Hz")
         self._mic_block_size.setValue(self._config.mic_block_size)
         self._model_path_edit.setText(self._config.model_paths.get(self._config.model_name, ""))
@@ -833,9 +1184,10 @@ class SettingsPage(QWidget):
         indices = sorted(set(available_indices + [selected_index]))
 
         self._camera_index.clear()
+        camera_icon = self._asset_icon("camera.svg")
         for index in indices:
             suffix = "" if index in available_indices else "（未检测）"
-            self._camera_index.addItem(f"摄像头 {index}{suffix}", index)
+            self._camera_index.addItem(camera_icon, f"摄像头 {index}{suffix}", index)
 
         selected_row = self._camera_index.findData(selected_index)
         if selected_row >= 0:
@@ -857,8 +1209,9 @@ class SettingsPage(QWidget):
                 device_map[selected_index] = f"麦克风 {selected_index}（未检测）"
 
         self._microphone_index.clear()
+        microphone_icon = self._asset_icon("microphone.svg")
         for index, name in sorted(device_map.items()):
-            self._microphone_index.addItem(f"{name}  [{index}]", index)
+            self._microphone_index.addItem(microphone_icon, f"{name}  [{index}]", index)
 
         selected_row = self._microphone_index.findData(selected_index)
         if selected_row >= 0:
@@ -932,6 +1285,32 @@ class SettingsPage(QWidget):
         )
         worker.start()
 
+    def _start_model_test(self) -> None:
+        """在后台测试 Live2D 人物模型文件是否可加载。"""
+        if self._model_test_running:
+            return
+
+        model_path_text = self._model_path_edit.text().strip()
+        model_path = resolve_project_path(model_path_text)
+        if not model_path_text:
+            self._set_device_test_status("model", "error", "连接失败：请先选择人物模型文件")
+            return
+        if not model_path.is_file():
+            self._set_device_test_status("model", "error", "连接失败：模型文件不存在")
+            return
+
+        self._model_test_running = True
+        self._model_test_button.setEnabled(False)
+        self._set_device_test_status("model", "testing", "检测中...")
+
+        worker = threading.Thread(
+            target=self._run_model_test,
+            args=(model_path,),
+            name="live2d-model-test",
+            daemon=True,
+        )
+        worker.start()
+
     def _start_llm_test(self) -> None:
         """在后台测试 LLM 接口是否可用。"""
         if self._llm_test_running:
@@ -961,7 +1340,7 @@ class SettingsPage(QWidget):
         try:
             import cv2
 
-            # 只短暂打开摄像头并读取一帧，不进入直播采集循环。
+            # 按开播前预检思路连续读取约 1 秒，避免偶发一帧成功造成误判。
             capture = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
             try:
                 if not capture.isOpened():
@@ -971,13 +1350,35 @@ class SettingsPage(QWidget):
                 capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
                 capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
                 capture.set(cv2.CAP_PROP_FPS, fps)
-                success, frame = capture.read()
-                if not success or frame is None:
-                    self.device_test_finished.emit("camera", False, "连接失败：未读取到画面")
+
+                success_count = 0
+                last_frame = None
+                brightness_values: list[float] = []
+                texture_values: list[float] = []
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline:
+                    success, frame = capture.read()
+                    if success and frame is not None:
+                        success_count += 1
+                        last_frame = frame
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        brightness_values.append(float(gray.mean()))
+                        texture_values.append(float(gray.std()))
+                    time.sleep(0.02)
+
+                if success_count < 3 or last_frame is None:
+                    self.device_test_finished.emit("camera", False, "连接失败：1 秒内未稳定读取到画面")
                     return
 
-                frame_height, frame_width = frame.shape[:2]
-                self.device_test_finished.emit("camera", True, f"连接正常，已读取画面 {frame_width}×{frame_height}")
+                avg_brightness = sum(brightness_values) / len(brightness_values)
+                avg_texture = sum(texture_values) / len(texture_values)
+                # 摄像头被关闭或隐私遮挡时，部分驱动仍会返回纯色占位帧，必须把这种无细节画面判为失败。
+                if avg_texture < 2.0 or (avg_brightness < 8.0 and avg_texture < 4.0):
+                    self.device_test_finished.emit("camera", False, "连接失败：摄像头画面为空白、黑屏或无有效细节")
+                    return
+
+                frame_height, frame_width = last_frame.shape[:2]
+                self.device_test_finished.emit("camera", True, f"连接正常，1 秒读取 {success_count} 帧 {frame_width}×{frame_height}")
             finally:
                 capture.release()
         except Exception as exc:  # noqa: BLE001
@@ -989,8 +1390,8 @@ class SettingsPage(QWidget):
         try:
             import sounddevice as sd
 
-            # 打开输入流并读取一小段音频，避免提前启动完整 ASR 链路。
-            frames = max(block_size, int(sample_rate * 0.25))
+            # 按直播实际采样参数打开输入流，连续采样约 1 秒并检查是否有有效输入。
+            frames = max(block_size, int(sample_rate * 1.0))
             stream = sd.InputStream(
                 device=microphone_index,
                 samplerate=sample_rate,
@@ -1011,46 +1412,104 @@ class SettingsPage(QWidget):
                 self.device_test_finished.emit("microphone", False, "连接失败：未采样到音频")
                 return
 
+            peak = float(abs(samples).max())
+            if peak <= 1e-6:
+                self.device_test_finished.emit("microphone", False, "连接失败：未检测到有效输入，请检查静音或权限")
+                return
+
             suffix = "，采样有溢出" if overflowed else ""
-            self.device_test_finished.emit("microphone", True, f"连接正常，已采样 {len(samples)} 帧{suffix}")
+            self.device_test_finished.emit("microphone", True, f"预检通过，已采样 1 秒，峰值 {peak:.4f}{suffix}")
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("麦克风连接测试失败：%s", exc)
             self.device_test_finished.emit("microphone", False, f"连接失败：{self._format_test_error(exc)}")
 
-    def _run_llm_test(self, base_url: str, api_key: str, model: str) -> None:
-        """后台执行 LLM 测试，确认模型接口可以完成一次短请求。"""
+    def _run_model_test(self, model_path: Path) -> None:
+        """后台执行人物模型测试，校验模型 JSON 并真实渲染第一帧。"""
+        renderer = None
         try:
-            from openai import OpenAI
+            from virtual_avatar_system.renderer.live2d_renderer import Live2DRenderer
 
-            # 只发送一次极短请求，用来验证地址、密钥、模型名称三项是否匹配。
-            client = OpenAI(
-                api_key=api_key,
-                base_url=base_url or None,
-                timeout=10.0,
-            )
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "你是连接测试助手，请用中文短句回答。"},
-                    {"role": "user", "content": "请回复：连接正常"},
-                ],
-                max_tokens=32,
-                temperature=0,
-            )
-            if not response.choices:
-                self.device_test_finished.emit("llm", False, "连接失败：服务端未返回候选结果")
+            # 先做资源完整性校验，能更快给出缺文件这类确定错误。
+            model_data = json.loads(model_path.read_text(encoding="utf-8"))
+            file_references = model_data.get("FileReferences", {})
+            if not isinstance(file_references, dict):
+                self.device_test_finished.emit("model", False, "连接失败：模型缺少 FileReferences")
                 return
 
-            message = response.choices[0].message
-            content = str(message.content or "").strip()
-            reasoning_content = str(getattr(message, "reasoning_content", "") or "").strip()
-            if content or reasoning_content:
-                self.device_test_finished.emit("llm", True, "连接正常，模型已响应")
+            model_dir = model_path.parent
+            missing_files: list[str] = []
+
+            moc_file = file_references.get("Moc")
+            if isinstance(moc_file, str) and not (model_dir / moc_file).is_file():
+                missing_files.append(moc_file)
+
+            textures = file_references.get("Textures", [])
+            if isinstance(textures, list):
+                for texture in textures:
+                    if isinstance(texture, str) and not (model_dir / texture).is_file():
+                        missing_files.append(texture)
+
+            if missing_files:
+                preview = "、".join(missing_files[:2])
+                suffix = "..." if len(missing_files) > 2 else ""
+                self.device_test_finished.emit("model", False, f"连接失败：缺少资源 {preview}{suffix}")
                 return
 
-            # 部分兼容服务会返回 choice 但正文为空；这仍说明地址、密钥、模型名已通过服务端校验。
-            finish_reason = response.choices[0].finish_reason or "unknown"
-            self.device_test_finished.emit("llm", True, f"连接正常，返回为空：{finish_reason}")
+            # 再启动一次真实 Live2D 渲染，等待第一帧完成后立即关闭。
+            renderer = Live2DRenderer()
+            renderer.start(model_path, window_size=(240, 360), always_on_top=False)
+            # Live2D 首次加载会解析动作、表情和纹理资源，部分机器上会超过 8 秒。
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
+                if renderer.is_ready:
+                    self.device_test_finished.emit("model", True, "预检通过，Live2D 已完成第一帧渲染")
+                    return
+                if not renderer.is_running:
+                    self.device_test_finished.emit("model", False, "连接失败：Live2D 渲染进程提前退出")
+                    return
+                time.sleep(0.05)
+
+            self.device_test_finished.emit("model", False, "连接失败：Live2D 15 秒内未完成渲染")
+        except json.JSONDecodeError as exc:
+            LOGGER.warning("人物模型 JSON 解析失败：%s", exc)
+            self.device_test_finished.emit("model", False, "连接失败：模型 JSON 格式异常")
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("人物模型连接测试失败：%s", exc)
+            self.device_test_finished.emit("model", False, f"连接失败：{self._format_test_error(exc)}")
+        finally:
+            if renderer is not None:
+                with contextlib.suppress(Exception):
+                    renderer.stop()
+
+    def _run_llm_test(self, base_url: str, api_key: str, model: str) -> None:
+        """后台执行 LLM 测试，使用直播语义理解链路完成一次真实调用。"""
+        try:
+            from virtual_avatar_system.llm.semantic import SemanticInterpreter, SemanticInterpreterConfig
+
+            # 使用直播时相同的 SemanticInterpreter，而不是单独走一套 OpenAI SDK 测试逻辑。
+            interpreter = SemanticInterpreter(
+                SemanticInterpreterConfig.from_sources(
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    model_name=self._config.model_name,
+                    min_interval_ms=0,
+                )
+            )
+            result = interpreter.interpret(
+                "观众提问：这个虚拟形象系统适合课堂展示和直播讲解吗？",
+                context={"scene": "preflight_test"},
+                force=True,
+            )
+            if result.error:
+                self.device_test_finished.emit("llm", False, f"连接失败：{self._format_test_error(RuntimeError(result.error))}")
+                return
+
+            if result.label:
+                self.device_test_finished.emit("llm", True, f"预检通过，语义标签：{result.label}")
+                return
+
+            self.device_test_finished.emit("llm", False, "连接失败：语义模块未返回有效标签")
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("LLM 连接测试失败：%s", self._format_test_error(exc))
             self.device_test_finished.emit("llm", False, f"连接失败：{self._format_test_error(exc)}")
@@ -1070,6 +1529,11 @@ class SettingsPage(QWidget):
             self._microphone_test_button.setEnabled(True)
             return
 
+        if device_type == "model":
+            self._model_test_running = False
+            self._model_test_button.setEnabled(True)
+            return
+
         if device_type == "llm":
             self._llm_test_running = False
             self._llm_test_button.setEnabled(True)
@@ -1079,13 +1543,23 @@ class SettingsPage(QWidget):
         status_labels = {
             "camera": self._camera_test_status,
             "microphone": self._microphone_test_status,
+            "model": self._model_test_status,
             "llm": self._llm_test_status,
         }
+        self._test_results[device_type] = result
         label = status_labels[device_type]
-        label.setText(message)
+        status_text_map = {
+            "idle": "● 未测试",
+            "testing": "● 检测中",
+            "success": "● 连接正常",
+            "error": "● 连接异常",
+        }
+        label.setText(status_text_map.get(result, message))
+        label.setToolTip(message)
         label.setProperty("result", result)
         label.style().unpolish(label)
         label.style().polish(label)
+        self._set_config_valid(self._compute_config_validity())
 
     def _format_test_error(self, exc: Exception) -> str:
         """把底层异常压缩成适合界面展示的短提示。"""
@@ -1134,6 +1608,7 @@ class SettingsPage(QWidget):
         self._config.llm_api_key = self._llm_api_key_edit.text().strip()
         self._config.llm_model = self._llm_model_edit.text().strip()
 
+        self._reset_test_results()
         self._set_config_valid(self._compute_config_validity())
 
         LOGGER.info(
@@ -1157,7 +1632,8 @@ class SettingsPage(QWidget):
 
     def _compute_config_validity(self) -> bool:
         """校验关键启动参数。"""
-        return self._update_model_path_state()
+        model_path_valid = self._update_model_path_state()
+        return model_path_valid and all(result == "success" for result in self._test_results.values())
 
     def _update_model_path_state(self) -> bool:
         """刷新模型路径输入框的错误状态。"""
@@ -1175,8 +1651,36 @@ class SettingsPage(QWidget):
 
     def _set_config_valid(self, valid: bool, emit: bool = True) -> None:
         """保存校验状态并在变化时通知主窗口。"""
+        self._update_sidebar_status(valid)
         if self._is_config_valid == valid:
             return
         self._is_config_valid = valid
         if emit:
             self.config_validity_changed.emit(valid)
+
+    def _update_sidebar_status(self, valid: bool) -> None:
+        """同步左侧系统状态卡片。"""
+        self._sidebar_status_label.setText("● 已就绪" if valid else "● 未就绪")
+        self._sidebar_status_label.setProperty("state", "ready" if valid else "idle")
+        self._sidebar_status_detail.setText("所有设备连接正常" if valid else self._build_pending_test_text())
+        self._sidebar_status_label.style().unpolish(self._sidebar_status_label)
+        self._sidebar_status_label.style().polish(self._sidebar_status_label)
+
+    def _reset_test_results(self) -> None:
+        """配置发生变化后重置连接测试状态。"""
+        for device_type in self._test_results:
+            self._set_device_test_status(device_type, "idle", "配置已变化，请重新测试")
+
+    def _build_pending_test_text(self) -> str:
+        """生成未就绪时左下角状态说明。"""
+        device_names = {
+            "camera": "摄像头",
+            "microphone": "麦克风",
+            "model": "人物模型",
+            "llm": "LLM",
+        }
+        for result_type, suffix in (("error", "连接异常"), ("testing", "检测中"), ("idle", "未测试")):
+            names = [device_names[key] for key, result in self._test_results.items() if result == result_type]
+            if names:
+                return f"{'、'.join(names)}{suffix}"
+        return "请完成连接测试"

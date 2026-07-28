@@ -13,8 +13,8 @@ import logging
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase
+from PySide6.QtCore import QDateTime, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -39,12 +39,13 @@ from virtual_avatar_system.ui.settings_page import SettingsPage
 from virtual_avatar_system.ui.system_tray import AppSystemTray
 
 LOGGER = logging.getLogger(__name__)
-CONFIG_WINDOW_SIZE: tuple[int, int] = (700, 720)
-CONFIG_MIN_SIZE: tuple[int, int] = (640, 660)
-CONFIG_MAX_WIDTH = 760
-LOADING_WINDOW_SIZE: tuple[int, int] = (520, 420)
-LOADING_MIN_SIZE: tuple[int, int] = (500, 390)
-LOADING_MAX_WIDTH = 620
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+CONFIG_WINDOW_SIZE: tuple[int, int] = (820, 700)
+CONFIG_MIN_SIZE: tuple[int, int] = (780, 640)
+CONFIG_MAX_WIDTH = 840
+LOADING_WINDOW_SIZE: tuple[int, int] = (480, 340)
+LOADING_MIN_SIZE: tuple[int, int] = (460, 320)
+LOADING_MAX_WIDTH = 540
 
 
 class MainWindow(QMainWindow):
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
         self._state_machine = LiveStateMachine()
         self._system_tray: AppSystemTray | None = None
         self._showing_report_summary = False
+        self._last_loading_pulse_ms = 0
 
         self._on_start_callbacks: list[Callable[[], None]] = []
         self._on_stop_callbacks: list[Callable[[], None]] = []
@@ -119,6 +121,20 @@ class MainWindow(QMainWindow):
     def update_startup_stage(self, text: str) -> None:
         """更新启动/停止加载页阶段。"""
         self._loading_stage_label.setText(text or "准备启动")
+        self.pulse_loading_animation()
+
+    def pulse_loading_animation(self, frames: int = 1) -> None:
+        """在同步启动/停止步骤中主动刷新加载图标。"""
+        if not self._loading_spinner_timer.isActive():
+            return
+        now_ms = QDateTime.currentMSecsSinceEpoch()
+        if now_ms - self._last_loading_pulse_ms < 220:
+            QApplication.processEvents()
+            return
+        self._last_loading_pulse_ms = now_ms
+        for _ in range(max(1, frames)):
+            self._advance_loading_spinner()
+        QApplication.processEvents()
 
     def update_microphone_status(self, text: str) -> None:
         """兼容旧接口：更新直播页监听状态。"""
@@ -153,20 +169,25 @@ class MainWindow(QMainWindow):
         self._showing_report_summary = True
         self._report_summary_page.set_summary(summary)
         self._apply_config_window_size()
+        self._show_report_header()
         self._content_stack.setCurrentWidget(self._report_summary_page)
         self._status_label.setText("报告已生成")
         self._status_badge.setProperty("status", "ready")
+        self._status_label.setProperty("status", "ready")
         self._status_dot.setObjectName("statusDotReady")
         self._status_badge.style().unpolish(self._status_badge)
         self._status_badge.style().polish(self._status_badge)
+        self._status_label.style().unpolish(self._status_label)
+        self._status_label.style().polish(self._status_label)
         self._status_dot.style().unpolish(self._status_dot)
         self._status_dot.style().polish(self._status_dot)
-        self._set_action_button("返回主页", True, "start")
+        self._set_action_button("←  返回主页", True, "start")
 
     def return_to_home(self) -> None:
         """从报告摘要页返回开播前配置页。"""
         self._showing_report_summary = False
         self._apply_config_window_size()
+        self._show_default_header()
         self._content_stack.setCurrentWidget(self._settings_page)
         self._on_state_changed(self._state_machine.current_state, self._state_machine.current_state)
 
@@ -211,10 +232,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(24, 24, 24, 20)
-        main_layout.setSpacing(16)
+        main_layout.setContentsMargins(22, 18, 22, 20)
+        main_layout.setSpacing(14)
 
-        main_layout.addWidget(self._build_header())
+        self._header = self._build_header()
+        main_layout.addWidget(self._header)
 
         self._settings_page = SettingsPage(self._config, self)
         self._settings_page.on_config_changed(self._on_config_changed)
@@ -229,29 +251,9 @@ class MainWindow(QMainWindow):
         self._content_stack.addWidget(self._live_dashboard)
         self._content_stack.addWidget(self._report_summary_page)
         main_layout.addWidget(self._content_stack, stretch=1)
+        self._action_footer = self._build_action_footer()
+        main_layout.addWidget(self._action_footer)
 
-        footer = QFrame(self)
-        footer.setObjectName("footer")
-        footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(0, 14, 0, 0)
-        footer_layout.addStretch()
-
-        self._action_button = QPushButton("▶  开始直播", self)
-        self._action_button.setObjectName("primaryActionButton")
-        self._action_button.setMinimumSize(196, 46)
-        self._action_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self._action_button.clicked.connect(self._on_action_pressed)
-
-        button_shadow = QGraphicsDropShadowEffect(self._action_button)
-        button_shadow.setBlurRadius(16)
-        button_shadow.setOffset(0, 4)
-        button_shadow.setColor(QColor(2, 132, 199, 64))
-        self._action_button.setGraphicsEffect(button_shadow)
-
-        footer_layout.addWidget(self._action_button)
-        footer_layout.addStretch()
-
-        main_layout.addWidget(footer)
         self._apply_styles()
 
     def _build_header(self) -> QFrame:
@@ -260,18 +262,27 @@ class MainWindow(QMainWindow):
         header.setObjectName("header")
 
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setContentsMargins(4, 0, 6, 0)
+        layout.setSpacing(14)
 
-        brand_mark = QLabel("VA", self)
-        brand_mark.setObjectName("brandMark")
-        brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        brand_mark.setFixedSize(28, 28)
-        layout.addWidget(brand_mark)
+        self._brand_mark = QLabel("VA", self)
+        self._brand_mark.setObjectName("brandMark")
+        self._brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._brand_mark.setFixedSize(46, 46)
+        layout.addWidget(self._brand_mark)
 
-        title_label = QLabel("虚拟形象智能驱动系统", self)
-        title_label.setObjectName("titleLabel")
-        layout.addWidget(title_label)
+        title_group = QVBoxLayout()
+        title_group.setContentsMargins(0, 0, 0, 0)
+        title_group.setSpacing(4)
+
+        self._title_label = QLabel("虚拟形象智能驱动系统", self)
+        self._title_label.setObjectName("titleLabel")
+        title_group.addWidget(self._title_label)
+
+        self._subtitle_label = QLabel("配置驱动参数，开启智能直播", self)
+        self._subtitle_label.setObjectName("subtitleLabel")
+        title_group.addWidget(self._subtitle_label)
+        layout.addLayout(title_group)
         layout.addStretch()
 
         self._status_badge = QFrame(self)
@@ -293,24 +304,83 @@ class MainWindow(QMainWindow):
 
         return header
 
+    def _show_default_header(self) -> None:
+        """恢复开播前和直播中的主窗口 Header。"""
+        self._brand_mark.clear()
+        self._brand_mark.setText("VA")
+        self._title_label.setText("虚拟形象智能驱动系统")
+        self._subtitle_label.setText("配置驱动参数，开启智能直播")
+        self._header.setVisible(True)
+
+    def _show_report_header(self) -> None:
+        """把主窗口 Header 切换为直播报告摘要标题。"""
+        self._brand_mark.setText("")
+        self._brand_mark.setPixmap(QIcon(str(ASSETS_DIR / "report-white.svg")).pixmap(QSize(24, 24)))
+        self._title_label.setText("直播报告摘要")
+        self._subtitle_label.setText("本次直播已结束，系统已沉淀 ASR、情绪、语义和动作事件记录。")
+        self._header.setVisible(True)
+
+    def _build_action_footer(self) -> QFrame:
+        """创建底部主操作区。"""
+        footer = QFrame(self)
+        footer.setObjectName("actionFooter")
+
+        layout = QVBoxLayout(footer)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        self._action_button = QPushButton("▶  开始直播", self)
+        self._action_button.setObjectName("primaryActionButton")
+        self._action_button.setMinimumSize(280, 50)
+        self._action_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._action_button.clicked.connect(self._on_action_pressed)
+
+        button_shadow = QGraphicsDropShadowEffect(self._action_button)
+        button_shadow.setBlurRadius(22)
+        button_shadow.setOffset(0, 8)
+        button_shadow.setColor(QColor(37, 99, 235, 58))
+        self._action_button.setGraphicsEffect(button_shadow)
+        layout.addWidget(self._action_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self._action_hint_label = QLabel("点击开始直播，系统将自动启动所有服务", self)
+        self._action_hint_label.setObjectName("actionHint")
+        self._action_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._action_hint_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        return footer
+
     def _build_loading_page(self) -> QWidget:
         """创建开播准备阶段的紧凑加载页。"""
         page = QWidget(self)
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 8, 0, 8)
-        layout.setSpacing(16)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
         layout.addStretch()
 
         card = QFrame(self)
         card.setObjectName("loadingCard")
-        card.setMinimumHeight(190)
+        card.setMinimumHeight(170)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(26, 24, 26, 24)
-        card_layout.setSpacing(14)
+        card_layout.setContentsMargins(22, 20, 22, 20)
+        card_layout.setSpacing(10)
 
         self._loading_indicator = QFrame(self)
         self._loading_indicator.setObjectName("loadingIndicator")
-        self._loading_indicator.setFixedSize(54, 54)
+        self._loading_indicator.setFixedSize(46, 46)
+        indicator_layout = QHBoxLayout(self._loading_indicator)
+        indicator_layout.setContentsMargins(11, 10, 11, 10)
+        indicator_layout.setSpacing(3)
+        indicator_layout.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter)
+
+        self._loading_spinner_bars: list[QFrame] = []
+        for height in (8, 16, 22, 12):
+            bar = QFrame(self)
+            bar.setObjectName("loadingSpinnerBar")
+            bar.setProperty("mode", "starting")
+            bar.setFixedSize(4, height)
+            indicator_layout.addWidget(bar, alignment=Qt.AlignmentFlag.AlignBottom)
+            self._loading_spinner_bars.append(bar)
         card_layout.addWidget(self._loading_indicator, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self._loading_title_label = QLabel("正在启动直播", self)
@@ -334,6 +404,17 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(card)
         layout.addStretch()
+
+        self._loading_spinner_frames = (
+            (8, 16, 22, 12),
+            (12, 22, 16, 8),
+            (16, 8, 12, 22),
+            (22, 12, 8, 16),
+        )
+        self._loading_spinner_index = 0
+        self._loading_spinner_timer = QTimer(self)
+        self._loading_spinner_timer.setInterval(220)
+        self._loading_spinner_timer.timeout.connect(self._advance_loading_spinner)
         return page
 
     def _apply_styles(self) -> None:
@@ -341,29 +422,34 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QWidget#root {
-                background: #F6F8FB;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #F8FBFF, stop:0.58 #F4F8FC, stop:1 #EEF6FF);
                 color: #0F172A;
-                font-family: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+                font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
                 font-size: 13px;
             }
             QLabel#brandMark {
-                background: #EFF6FF;
-                border: 1px solid #BFDBFE;
-                border-radius: 8px;
-                color: #2563EB;
-                font-size: 11px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3B82F6, stop:1 #1D4ED8);
+                border: 0;
+                border-radius: 12px;
+                color: #FFFFFF;
+                font-size: 19px;
                 font-weight: 800;
             }
             QLabel#titleLabel {
                 color: #0F172A;
-                font-size: 16px;
-                font-weight: 700;
+                font-size: 24px;
+                font-weight: 800;
+            }
+            QLabel#subtitleLabel {
+                color: #64748B;
+                font-size: 14px;
+                font-weight: 500;
             }
             QFrame#statusBadge {
                 background: #FEF2F2;
                 border: 1px solid #FECACA;
-                border-radius: 12px;
-                min-height: 28px;
+                border-radius: 16px;
+                min-height: 44px;
             }
             QFrame#statusBadge[status="ready"],
             QFrame#statusBadge[status="running"] {
@@ -381,8 +467,20 @@ class MainWindow(QMainWindow):
             }
             QLabel#statusText {
                 color: #EF4444;
-                font-size: 13px;
-                font-weight: 600;
+                font-size: 16px;
+                font-weight: 800;
+            }
+            QLabel#statusText[status="ready"],
+            QLabel#statusText[status="running"] {
+                color: #10B981;
+            }
+            QLabel#statusText[status="preparing"],
+            QLabel#statusText[status="stopping"] {
+                color: #D97706;
+            }
+            QLabel#statusText[status="idle"],
+            QLabel#statusText[status="error"] {
+                color: #EF4444;
             }
             QFrame#statusBadge[status="ready"] QLabel#statusText,
             QFrame#statusBadge[status="running"] QLabel#statusText {
@@ -413,16 +511,16 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
             }
             QPushButton#primaryActionButton {
-                background: #2563EB;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563EB, stop:1 #1D4ED8);
                 border: 0;
-                border-radius: 8px;
+                border-radius: 10px;
                 color: white;
-                font-size: 15px;
+                font-size: 20px;
                 font-weight: 700;
-                padding: 0 24px;
+                padding: 0 22px;
             }
             QPushButton#primaryActionButton:hover {
-                background: #1D4ED8;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1D4ED8, stop:1 #1E40AF);
             }
             QPushButton#primaryActionButton:pressed {
                 background: #1E40AF;
@@ -437,28 +535,45 @@ class MainWindow(QMainWindow):
             QPushButton#primaryActionButton[mode="stop"]:hover {
                 background: #B91C1C;
             }
+            QLabel#actionHint {
+                color: #64748B;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            QFrame#actionFooter {
+                background: transparent;
+                border: 0;
+            }
             QFrame#loadingCard {
                 background: #FFFFFF;
                 border: 1px solid #E2E8F0;
-                border-radius: 8px;
+                border-radius: 10px;
             }
             QFrame#loadingIndicator {
-                background: #DBEAFE;
-                border: 8px solid #EFF6FF;
-                border-radius: 27px;
+                background: #EFF6FF;
+                border: 1px solid #BFDBFE;
+                border-radius: 23px;
             }
             QFrame#loadingIndicator[mode="stopping"] {
-                background: #FECACA;
-                border: 8px solid #FEF2F2;
+                background: #FEF2F2;
+                border: 1px solid #FECACA;
+            }
+            QFrame#loadingSpinnerBar {
+                background: #60A5FA;
+                border: 0;
+                border-radius: 2px;
+            }
+            QFrame#loadingSpinnerBar[mode="stopping"] {
+                background: #F87171;
             }
             QLabel#loadingTitle {
                 color: #0F172A;
-                font-size: 18px;
+                font-size: 17px;
                 font-weight: 700;
             }
             QLabel#loadingStage {
                 color: #2563EB;
-                font-size: 14px;
+                font-size: 13px;
                 font-weight: 600;
             }
             QLabel#loadingHint {
@@ -468,6 +583,29 @@ class MainWindow(QMainWindow):
             }
             """
         )
+
+    def _set_loading_animation_active(self, active: bool, mode: str = "starting") -> None:
+        """控制加载页动态图标，避免离开加载页后继续刷新。"""
+        self._loading_indicator.setProperty("mode", mode)
+        self._last_loading_pulse_ms = 0
+        for bar in self._loading_spinner_bars:
+            bar.setProperty("mode", mode)
+        for widget in (self._loading_indicator, *self._loading_spinner_bars):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+        if active and not self._loading_spinner_timer.isActive():
+            self._loading_spinner_timer.start()
+            return
+        if not active and self._loading_spinner_timer.isActive():
+            self._loading_spinner_timer.stop()
+
+    def _advance_loading_spinner(self) -> None:
+        """推进加载图标帧，给重资源启动/停止阶段提供动态反馈。"""
+        self._loading_spinner_index = (self._loading_spinner_index + 1) % len(self._loading_spinner_frames)
+        heights = self._loading_spinner_frames[self._loading_spinner_index]
+        for bar, height in zip(self._loading_spinner_bars, heights):
+            bar.setFixedHeight(height)
 
     # ---- 状态机联动 ----
 
@@ -514,52 +652,74 @@ class MainWindow(QMainWindow):
         # 准备和停止阶段都使用轻量加载页，避免重资源加载/释放期间给用户卡住的错觉。
         if new == LiveState.PREPARING:
             self._loading_title_label.setText("正在启动直播")
-            self._loading_indicator.setProperty("mode", "starting")
-            self._loading_indicator.style().unpolish(self._loading_indicator)
-            self._loading_indicator.style().polish(self._loading_indicator)
+            self._set_loading_animation_active(True, "starting")
             self._apply_loading_window_size()
+            self._show_default_header()
             self._content_stack.setCurrentWidget(self._loading_page)
         elif new == LiveState.STOPPING:
             self._loading_title_label.setText("正在停止直播")
-            self._loading_indicator.setProperty("mode", "stopping")
-            self._loading_indicator.style().unpolish(self._loading_indicator)
-            self._loading_indicator.style().polish(self._loading_indicator)
+            self._set_loading_animation_active(True, "stopping")
             self._apply_loading_window_size()
+            self._show_default_header()
             self._content_stack.setCurrentWidget(self._loading_page)
         elif new == LiveState.RUNNING:
+            self._set_loading_animation_active(False)
             self._apply_config_window_size()
+            self._show_default_header()
             self._content_stack.setCurrentWidget(self._live_dashboard)
         elif self._showing_report_summary:
             # 停播后保持报告摘要页，避免状态回到 IDLE 时立刻跳回配置页。
+            self._set_loading_animation_active(False)
             self._apply_config_window_size()
+            self._show_report_header()
             self._content_stack.setCurrentWidget(self._report_summary_page)
         else:
+            self._set_loading_animation_active(False)
             self._apply_config_window_size()
+            self._show_default_header()
             self._content_stack.setCurrentWidget(self._settings_page)
 
-        self._status_label.setText(state_text_map.get(new, "未知"))
-        self._status_badge.setProperty("status", badge_status_map.get(new, "idle"))
-        self._status_dot.setObjectName(dot_style_map.get(new, "statusDotIdle"))
+        if self._showing_report_summary:
+            status_text = "报告已生成"
+            status_name = "ready"
+            dot_name = "statusDotReady"
+        else:
+            status_text = state_text_map.get(new, "未知")
+            status_name = badge_status_map.get(new, "idle")
+            dot_name = dot_style_map.get(new, "statusDotIdle")
+
+        self._status_label.setText(status_text)
+        self._status_badge.setProperty("status", status_name)
+        self._status_label.setProperty("status", status_name)
+        self._status_dot.setObjectName(dot_name)
         self._status_badge.style().unpolish(self._status_badge)
         self._status_badge.style().polish(self._status_badge)
+        self._status_label.style().unpolish(self._status_label)
+        self._status_label.style().polish(self._status_label)
         self._status_dot.style().unpolish(self._status_dot)
         self._status_dot.style().polish(self._status_dot)
 
         if new == LiveState.RUNNING:
             self._set_action_button("■  停止直播", True, "stop")
+            self._action_footer.setVisible(True)
         elif new == LiveState.PREPARING:
             self._set_action_button("准备中", False, "start")
+            self._action_footer.setVisible(False)
         elif new == LiveState.STOPPING:
             self._set_action_button("停止中", False, "stop")
+            self._action_footer.setVisible(False)
         elif new == LiveState.ERROR:
             self._set_action_button("▶  重试启动", True, "start")
+            self._action_footer.setVisible(True)
         elif self._showing_report_summary:
-            self._set_action_button("返回主页", True, "start")
+            self._set_action_button("←  返回主页", True, "start")
+            self._action_footer.setVisible(True)
         else:
+            self._action_footer.setVisible(True)
             if is_config_valid:
                 self._set_action_button("▶  开始直播", self._state_machine.can_start, "start")
             else:
-                self._set_action_button("请先配置参数", False, "start")
+                self._set_action_button("请先完成测试", False, "start")
 
         if new == LiveState.ERROR:
             QMessageBox.critical(
@@ -572,9 +732,18 @@ class MainWindow(QMainWindow):
         """同步底部主按钮的文案、可用状态和视觉层级。"""
         self._action_button.setText(text)
         self._action_button.setEnabled(enabled)
+        self._action_button.setMinimumWidth(340 if "返回主页" in text else 280)
         self._action_button.setProperty("mode", mode)
         self._action_button.style().unpolish(self._action_button)
         self._action_button.style().polish(self._action_button)
+        if mode == "stop":
+            self._action_hint_label.setText("停止直播后，系统将生成本次直播报告")
+        elif "返回主页" in text:
+            self._action_hint_label.setText("查看完报告后，可返回配置主页")
+        elif enabled:
+            self._action_hint_label.setText("点击开始直播，系统将自动启动所有服务")
+        else:
+            self._action_hint_label.setText("请先完成摄像头、麦克风、人物模型和 LLM 连接测试")
 
     # ---- 按钮事件 ----
 

@@ -83,6 +83,8 @@ class StartupSplash(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._progress_value = 8
+        self._progress_target = 18
         self.setWindowTitle("虚拟形象智能驱动系统")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -92,11 +94,15 @@ class StartupSplash(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFixedSize(460, 210)
         self._setup_ui()
+        self._setup_progress_timer()
         self._center_on_screen()
 
-    def update_stage(self, text: str) -> None:
+    def update_stage(self, text: str, progress: int | None = None) -> None:
         """更新启动阶段提示并立即刷新界面。"""
         self._stage_label.setText(text)
+        if progress is not None:
+            self._progress_target = max(self._progress_target, min(progress, 98))
+        self._advance_progress()
         _flush_ui_events()
 
     def _setup_ui(self) -> None:
@@ -152,13 +158,13 @@ class StartupSplash(QWidget):
         self._stage_label.setWordWrap(True)
         status_layout.addWidget(self._stage_label)
 
-        progress_bar = QProgressBar(self)
-        progress_bar.setObjectName("startupProgress")
-        # 不预估真实耗时，使用忙碌进度条表达程序仍在初始化。
-        progress_bar.setRange(0, 0)
-        progress_bar.setTextVisible(False)
-        progress_bar.setFixedHeight(6)
-        status_layout.addWidget(progress_bar)
+        self._progress_bar = QProgressBar(self)
+        self._progress_bar.setObjectName("startupProgress")
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(self._progress_value)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setFixedHeight(6)
+        status_layout.addWidget(self._progress_bar)
         card_layout.addWidget(status_box)
 
         hint = QLabel("请稍候，正在准备桌面运行环境", self)
@@ -218,11 +224,39 @@ class StartupSplash(QWidget):
                 border-radius: 3px;
             }
             QProgressBar#startupProgress::chunk {
-                background: #2563EB;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563EB, stop:1 #60A5FA);
                 border-radius: 3px;
             }
             """
         )
+
+    def _setup_progress_timer(self) -> None:
+        """创建启动进度动画定时器，让进度条在耗时阶段也持续移动。"""
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(90)
+        self._progress_timer.timeout.connect(self._advance_progress)
+        self._progress_timer.start()
+
+    def _advance_progress(self) -> None:
+        """把进度值平滑推进到当前阶段目标值。"""
+        if self._progress_value >= self._progress_target:
+            # 阶段耗时较长时微量推进，避免用户误以为启动卡住。
+            if self._progress_value < 96:
+                self._progress_value += 1
+            else:
+                return
+        else:
+            step = 2 if self._progress_target - self._progress_value > 8 else 1
+            self._progress_value = min(self._progress_value + step, self._progress_target)
+        self._progress_bar.setValue(self._progress_value)
+
+    def finish_progress(self) -> None:
+        """启动完成前补满进度条。"""
+        self._progress_target = 100
+        self._progress_value = 100
+        self._progress_bar.setValue(100)
+        self._progress_timer.stop()
+        _flush_ui_events()
 
     def _center_on_screen(self) -> None:
         """把启动小窗口移动到当前屏幕中央。"""
@@ -247,60 +281,74 @@ def main() -> None:
 
     startup_splash = StartupSplash()
     startup_splash.show()
-    startup_splash.update_stage("正在启动虚拟形象智能驱动系统...")
+    startup_splash.update_stage("正在启动虚拟形象智能驱动系统...", 12)
 
     # ---- 延迟导入项目模块，让 exe 启动时尽早显示启动小窗口 ----
-    startup_splash.update_stage("正在检查运行环境...")
+    startup_splash.update_stage("正在检查运行环境...", 22)
     from virtual_avatar_system.utils.runtime_dependencies import ensure_ffmpeg_on_path
 
     ensure_ffmpeg_on_path()
 
-    startup_splash.update_stage("正在加载核心模块...")
+    startup_splash.update_stage("正在加载语音识别模块...", 32)
     from virtual_avatar_system.audio.live_speech_service import (
         LiveSpeechServiceConfig,
         LiveSpeechUnderstandingService,
     )
+
+    startup_splash.update_stage("正在加载配置系统...", 42)
     from virtual_avatar_system.config.app_config import (
         get_model_path,
         load_config,
         resolve_project_path,
         save_config,
     )
+
+    startup_splash.update_stage("正在加载虚拟形象控制器...", 48)
     from virtual_avatar_system.controller.avatar_controller import AvatarController, AvatarInputState
+
+    startup_splash.update_stage("正在加载 LLM 语义模块...", 52)
     from virtual_avatar_system.llm.semantic import get_idle_labels
+
+    startup_splash.update_stage("正在加载 Live2D 渲染模块...", 56)
     from virtual_avatar_system.renderer.live2d_renderer import Live2DRenderer
+
+    startup_splash.update_stage("正在加载直播报告模块...", 58)
     from virtual_avatar_system.reporting.live_event_recorder import LiveEventRecorder
     from virtual_avatar_system.reporting.live_report_generator import (
         build_live_report_summary,
         build_suggested_reply,
         save_live_report,
     )
+
+    startup_splash.update_stage("正在加载主窗口界面...", 60)
     from virtual_avatar_system.ui.main_window import MainWindow
     from virtual_avatar_system.ui.system_tray import AppSystemTray
+
+    startup_splash.update_stage("正在加载摄像头与人脸检测模块...", 64)
     from virtual_avatar_system.vision.camera_source import CameraFrameSource
     from virtual_avatar_system.vision.face_inference import FaceLandmarkInferencer
 
     # ---- 加载配置 ----
-    startup_splash.update_stage("正在加载配置...")
+    startup_splash.update_stage("正在读取本地配置...", 68)
     config = load_config()
     speech_service: LiveSpeechUnderstandingService | None = None
 
     # ---- 创建窗口 ----
-    startup_splash.update_stage("正在初始化主窗口...")
+    startup_splash.update_stage("正在初始化主窗口...", 72)
     main_window = MainWindow(config)
-    startup_splash.update_stage("正在接入后端日志...")
+    startup_splash.update_stage("正在接入后端日志...", 78)
     ui_log_handler = _attach_ui_log_handler(main_window)
     logger.info("后端输出日志面板已连接")
 
     # ---- 系统托盘 ----
-    startup_splash.update_stage("正在初始化系统托盘...")
+    startup_splash.update_stage("正在初始化系统托盘...", 84)
     tray = AppSystemTray(main_window)
     tray.show()
 
     main_window.set_system_tray(tray)
 
     # ---- 融合层与渲染层 ----
-    startup_splash.update_stage("正在准备运行控制器...")
+    startup_splash.update_stage("正在准备运行控制器...", 90)
     avatar_controller = AvatarController(model_name=config.model_name)
     live2d_renderer = Live2DRenderer()
     event_recorder = LiveEventRecorder()
@@ -418,7 +466,10 @@ def main() -> None:
 
     consume_timer.timeout.connect(_consume_features)
 
-    def _shutdown_runtime(stage_callback: Callable[[str], None] | None = None) -> None:
+    def _shutdown_runtime(
+        stage_callback: Callable[[str], None] | None = None,
+        progress_callback: Callable[[], None] | None = None,
+    ) -> None:
         """停止视觉采集、推理和渲染链路。"""
         nonlocal camera_source
         if stage_callback is not None:
@@ -427,24 +478,27 @@ def main() -> None:
         consume_timer.stop()
         if stage_callback is not None:
             stage_callback("正在关闭人脸推理...")
-        inferencer.stop()
+        inferencer.stop(progress_callback)
         if camera_source is not None:
             if stage_callback is not None:
                 stage_callback("正在关闭摄像头...")
-            camera_source.stop()
+            camera_source.stop(progress_callback)
             camera_source = None
         if stage_callback is not None:
             stage_callback("正在关闭人物模型...")
-        live2d_renderer.stop()
+        live2d_renderer.stop(progress_callback)
 
     # ---- 语音、情绪与 LLM 链路 ----
-    def _shutdown_speech(stage_callback: Callable[[str], None] | None = None) -> None:
+    def _shutdown_speech(
+        stage_callback: Callable[[str], None] | None = None,
+        progress_callback: Callable[[], None] | None = None,
+    ) -> None:
         """停止 C 链路并释放麦克风与 FunASR 资源。"""
         nonlocal speech_service
         if speech_service is not None:
             if stage_callback is not None:
                 stage_callback("正在关闭麦克风和语音识别...")
-            speech_service.stop()
+            speech_service.stop(progress_callback)
             speech_service = None
 
     # ---- 开始 / 停止事件：B 视觉 + C 语音/情绪/LLM + D 渲染 ----
@@ -568,9 +622,14 @@ def main() -> None:
         - 停止 C 链路后台线程
         """
         logger.info("停止直播：释放视觉、渲染、语音/情绪/LLM 链路")
+        def _pulse_stop_animation() -> None:
+            """同步释放资源时强制推进停止页加载图标。"""
+            main_window.pulse_loading_animation()
+
         def _update_stop_stage(text: str) -> None:
             """刷新停止阶段提示，并立即处理 UI 事件。"""
             main_window.update_startup_stage(text)
+            main_window.pulse_loading_animation(2)
             _flush_ui_events()
 
         _update_stop_stage("正在停止直播...")
@@ -578,8 +637,8 @@ def main() -> None:
         main_window.update_microphone_listening_status("已停止")
         main_window.update_camera_connection_status("已停止")
         main_window.update_face_detection_status("已停止")
-        _shutdown_speech(_update_stop_stage)
-        _shutdown_runtime(_update_stop_stage)
+        _shutdown_speech(_update_stop_stage, _pulse_stop_animation)
+        _shutdown_runtime(_update_stop_stage, _pulse_stop_animation)
         session_record = event_recorder.stop_session()
         report_path = save_live_report(session_record, PROJECT_ROOT / "reports")
         report_summary = build_live_report_summary(session_record, report_path)
@@ -596,7 +655,8 @@ def main() -> None:
     main_window.on_start(on_start)
     main_window.on_stop(on_stop)
 
-    startup_splash.update_stage("启动完成，正在打开主窗口...")
+    startup_splash.update_stage("启动完成，正在打开主窗口...", 98)
+    startup_splash.finish_progress()
     main_window.show()
     startup_splash.close()
     startup_splash.deleteLater()

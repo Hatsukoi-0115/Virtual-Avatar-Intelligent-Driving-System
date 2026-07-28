@@ -14,9 +14,9 @@
   "model_paths": {
     "haru_ja": "models/haru_ja/runtime/haru.model3.json"
   },
-  "llm_base_url": "",
+  "llm_base_url": "https://api.deepseek.com/v1",
   "llm_api_key": "",
-  "llm_model": "",
+  "llm_model": "deepseek-v4-pro",
   "preview_visible": false,
   "preview_width": 360,
   "preview_height": 640,
