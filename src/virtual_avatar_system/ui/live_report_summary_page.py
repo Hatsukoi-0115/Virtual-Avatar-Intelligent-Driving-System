@@ -65,35 +65,48 @@ class LiveReportSummaryPage(QWidget):
         content.setObjectName("reportContent")
         content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(2, 2, 2, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(2, 2, 2, 12)
+        layout.setSpacing(10)
 
         header = self._build_header()
         layout.addWidget(header)
 
-        self._report_path_value = self._create_info_row(layout, "报告存放位置", "等待生成", selectable=True)
-
-        self._duration_value, self._time_range_value = self._create_time_summary_card(layout)
+        top_grid = QGridLayout()
+        top_grid.setContentsMargins(0, 0, 0, 0)
+        top_grid.setHorizontalSpacing(10)
+        top_grid.setVerticalSpacing(10)
+        time_card, self._duration_value, self._time_range_value = self._create_time_summary_card()
+        path_card, self._report_path_value = self._create_info_card("报告存放位置", "等待生成", selectable=True)
+        top_grid.addWidget(time_card, 0, 0)
+        top_grid.addWidget(path_card, 0, 1)
+        top_grid.setColumnStretch(0, 1)
+        top_grid.setColumnStretch(1, 2)
+        layout.addLayout(top_grid)
 
         metrics = QGridLayout()
         metrics.setContentsMargins(0, 0, 0, 0)
-        metrics.setHorizontalSpacing(12)
-        metrics.setVerticalSpacing(12)
+        metrics.setHorizontalSpacing(10)
+        metrics.setVerticalSpacing(10)
         self._event_count_value = self._create_metric_card(metrics, "系统工作记录数", 0, 0)
         self._asr_count_value = self._create_metric_card(metrics, "FunASR 文本条数", 0, 1)
-        self._comment_count_value = self._create_metric_card(metrics, "观众评论数量", 1, 0, column_span=2)
+        self._comment_count_value = self._create_metric_card(metrics, "观众评论数量", 0, 2)
+        metrics.setColumnStretch(0, 1)
+        metrics.setColumnStretch(1, 1)
+        metrics.setColumnStretch(2, 1)
         layout.addLayout(metrics)
 
         self._recommendations_value = self._create_recommendation_card(layout)
 
         overview = QGridLayout()
         overview.setContentsMargins(0, 0, 0, 0)
-        overview.setHorizontalSpacing(12)
-        overview.setVerticalSpacing(12)
+        overview.setHorizontalSpacing(10)
+        overview.setVerticalSpacing(10)
         self._semantic_value = self._create_overview_card(overview, "LLM 语义标签分布", 0, 0)
         self._emotion_value = self._create_overview_card(overview, "情绪结果分布", 0, 1)
         self._action_value = self._create_overview_card(overview, "当前动作分布", 1, 0)
         self._comments_value = self._create_overview_card(overview, "高频评论", 1, 1)
+        overview.setColumnStretch(0, 1)
+        overview.setColumnStretch(1, 1)
         layout.addLayout(overview)
 
         layout.addStretch()
@@ -106,9 +119,10 @@ class LiveReportSummaryPage(QWidget):
         """创建报告页标题区域。"""
         header = QFrame(self)
         header.setObjectName("reportHeader")
+        header.setMinimumHeight(76)
         layout = QVBoxLayout(header)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(8)
+        layout.setContentsMargins(18, 13, 18, 13)
+        layout.setSpacing(6)
 
         title = QLabel("直播报告摘要", self)
         title.setObjectName("reportTitle")
@@ -120,14 +134,14 @@ class LiveReportSummaryPage(QWidget):
         layout.addWidget(subtitle)
         return header
 
-    def _create_time_summary_card(self, parent_layout: QVBoxLayout) -> tuple[QLabel, QLabel]:
+    def _create_time_summary_card(self) -> tuple[QFrame, QLabel, QLabel]:
         """创建直播时间和时长合并卡片。"""
         card = QFrame(self)
         card.setObjectName("reportTimeCard")
-        card.setMinimumHeight(98)
+        card.setMinimumHeight(88)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 13, 16, 13)
-        layout.setSpacing(7)
+        layout.setContentsMargins(14, 11, 14, 11)
+        layout.setSpacing(5)
 
         title = QLabel("直播时间与时长", self)
         title.setObjectName("reportInfoTitle")
@@ -143,8 +157,7 @@ class LiveReportSummaryPage(QWidget):
         time_range.setWordWrap(True)
         layout.addWidget(time_range)
 
-        parent_layout.addWidget(card)
-        return duration, time_range
+        return card, duration, time_range
 
     def _create_metric_card(
         self,
@@ -157,10 +170,10 @@ class LiveReportSummaryPage(QWidget):
         """创建顶部基础指标卡片。"""
         card = QFrame(self)
         card.setObjectName("reportMetricCard")
-        card.setMinimumHeight(78)
+        card.setMinimumHeight(72)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 11, 14, 11)
-        layout.setSpacing(5)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(4)
 
         title = QLabel(title_text, self)
         title.setObjectName("reportMetricTitle")
@@ -174,13 +187,14 @@ class LiveReportSummaryPage(QWidget):
         parent_layout.addWidget(card, row, column, 1, column_span)
         return value
 
-    def _create_info_row(self, parent_layout: QVBoxLayout, title_text: str, value_text: str, selectable: bool = False) -> QLabel:
-        """创建单行信息区块。"""
+    def _create_info_card(self, title_text: str, value_text: str, selectable: bool = False) -> tuple[QFrame, QLabel]:
+        """创建信息区块卡片。"""
         card = QFrame(self)
         card.setObjectName("reportInfoCard")
+        card.setMinimumHeight(88)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 11, 14, 11)
-        layout.setSpacing(6)
+        layout.setSpacing(5)
 
         title = QLabel(title_text, self)
         title.setObjectName("reportInfoTitle")
@@ -194,17 +208,16 @@ class LiveReportSummaryPage(QWidget):
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(value)
 
-        parent_layout.addWidget(card)
-        return value
+        return card, value
 
     def _create_overview_card(self, parent_layout: QGridLayout, title_text: str, row: int, column: int) -> QLabel:
         """创建分布概览卡片。"""
         card = QFrame(self)
         card.setObjectName("reportOverviewCard")
-        card.setMinimumHeight(112)
+        card.setMinimumHeight(104)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 11, 14, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(14, 10, 14, 11)
+        layout.setSpacing(6)
 
         title = QLabel(title_text, self)
         title.setObjectName("reportInfoTitle")
@@ -223,9 +236,10 @@ class LiveReportSummaryPage(QWidget):
         """创建推荐改进点区域。"""
         card = QFrame(self)
         card.setObjectName("reportRecommendationCard")
+        card.setMinimumHeight(110)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(8)
+        layout.setContentsMargins(14, 11, 14, 12)
+        layout.setSpacing(6)
 
         title = QLabel("推荐改进点", self)
         title.setObjectName("reportInfoTitle")
@@ -258,7 +272,7 @@ class LiveReportSummaryPage(QWidget):
         """格式化推荐改进点。"""
         if not items:
             return "暂无推荐改进点"
-        return "\n".join(f"{index}. {item}" for index, item in enumerate(items[:4], start=1))
+        return "\n".join(f"{index}. {item}" for index, item in enumerate(items[:3], start=1))
 
     @staticmethod
     def _format_report_path(report_path: str) -> str:
@@ -278,10 +292,10 @@ class LiveReportSummaryPage(QWidget):
             QWidget#reportSummaryPage,
             QWidget#reportContent,
             QWidget#reportScrollViewport {
-                background: #F6F8FB;
+                background: #F7F9FC;
             }
             QScrollArea#reportScrollArea {
-                background: #F6F8FB;
+                background: #F7F9FC;
                 border: 0;
             }
             QFrame#reportHeader {
@@ -300,7 +314,7 @@ class LiveReportSummaryPage(QWidget):
             }
             QLabel#reportTitle {
                 color: #0F172A;
-                font-size: 17px;
+                font-size: 16px;
                 font-weight: 800;
             }
             QLabel#reportSubtitle,
@@ -308,29 +322,29 @@ class LiveReportSummaryPage(QWidget):
             QLabel#reportOverviewValue,
             QLabel#reportRecommendationValue {
                 color: #334155;
-                font-size: 13px;
-                font-weight: 500;
+                font-size: 12px;
+                font-weight: 600;
                 line-height: 1.35;
             }
             QLabel#reportMetricTitle,
             QLabel#reportInfoTitle {
                 color: #64748B;
-                font-size: 12px;
+                font-size: 11px;
                 font-weight: 700;
             }
             QLabel#reportMetricValue {
                 color: #0F172A;
-                font-size: 17px;
+                font-size: 18px;
                 font-weight: 800;
             }
             QLabel#reportTimeDuration {
                 color: #0F172A;
-                font-size: 20px;
+                font-size: 19px;
                 font-weight: 800;
             }
             QLabel#reportTimeRange {
                 color: #475569;
-                font-size: 13px;
+                font-size: 12px;
                 font-weight: 600;
             }
             """
