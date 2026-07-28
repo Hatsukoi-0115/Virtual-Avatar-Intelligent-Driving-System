@@ -15,5 +15,10 @@ models/
 # Generated validation assets
 scripts/poc/assets/
 
+# Generated live reports
+reports/
+reports-test/
+run-logs/
+
 # Environment secrets
 .env

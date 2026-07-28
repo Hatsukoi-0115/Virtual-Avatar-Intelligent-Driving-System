@@ -1,4 +1,4 @@
-"""日志输出面板模块。
+﻿"""日志输出面板模块。
 
 提供线程安全的后端日志输出展示组件，用于在直播开始界面上
 实时显示 ASR、情绪分类、LLM 语义等后端模块的运行输出。
@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QObject, Signal
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -27,7 +27,7 @@ class LogSignal(QObject):
 
 
 class LogPanel(QWidget):
-    """可折叠的后端输出日志面板。
+    """后端输出日志面板。
 
     使用方式：
         panel = LogPanel()
@@ -41,7 +41,7 @@ class LogPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._collapsed = False
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._signal = LogSignal()
         self._signal.append.connect(self._on_append_log, Qt.ConnectionType.QueuedConnection)
@@ -78,12 +78,6 @@ class LogPanel(QWidget):
 
         header_layout.addStretch()
 
-        self._toggle_button = QPushButton("收起 ▲", self)
-        self._toggle_button.setObjectName("logToggleButton")
-        self._toggle_button.setFixedSize(66, 24)
-        self._toggle_button.clicked.connect(self._toggle_collapse)
-        header_layout.addWidget(self._toggle_button)
-
         clear_button = QPushButton("清空", self)
         clear_button.setObjectName("logClearButton")
         clear_button.setFixedSize(48, 24)
@@ -97,8 +91,7 @@ class LogPanel(QWidget):
         self._log_view.setObjectName("logView")
         self._log_view.setReadOnly(True)
         self._log_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._log_view.setMinimumHeight(96)
-        self._log_view.setMaximumHeight(220)
+        self._log_view.setMinimumHeight(360)
         self._log_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self._log_view, stretch=1)
 
@@ -114,7 +107,6 @@ class LogPanel(QWidget):
                 font-size: 13px;
                 font-weight: 700;
             }
-            QPushButton#logToggleButton,
             QPushButton#logClearButton {
                 background: #FFFFFF;
                 border: 1px solid #E2E8F0;
@@ -123,7 +115,6 @@ class LogPanel(QWidget):
                 font-size: 11px;
                 padding: 2px 8px;
             }
-            QPushButton#logToggleButton:hover,
             QPushButton#logClearButton:hover {
                 background: #E2E8F0;
                 color: #1E293B;
@@ -134,7 +125,7 @@ class LogPanel(QWidget):
                 border-radius: 8px;
                 color: #E2E8F0;
                 font-family: "Cascadia Code", "Consolas", "Noto Sans SC", monospace;
-                font-size: 11px;
+                font-size: 12px;
                 padding: 10px 12px;
                 selection-background-color: #334155;
             }
@@ -199,9 +190,3 @@ class LogPanel(QWidget):
         scrollbar = self._log_view.verticalScrollBar()
         if scrollbar is not None:
             scrollbar.setValue(scrollbar.maximum())
-
-    def _toggle_collapse(self) -> None:
-        """折叠/展开日志内容区。"""
-        self._collapsed = not self._collapsed
-        self._log_view.setVisible(not self._collapsed)
-        self._toggle_button.setText("展开 ▼" if self._collapsed else "收起 ▲")

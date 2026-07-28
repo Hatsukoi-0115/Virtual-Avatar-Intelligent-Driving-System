@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import logging
+import contextlib
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -23,8 +25,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -147,11 +149,15 @@ class SettingsPage(QWidget):
     """
 
     config_validity_changed = Signal(bool)
+    device_test_finished = Signal(str, bool, str)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._config = config
         self._is_config_valid = False
+        self._camera_test_running = False
+        self._microphone_test_running = False
+        self._llm_test_running = False
         self._on_config_changed_callbacks: list[Callable[[AppConfig], None]] = []
 
         self._setup_ui()
@@ -172,31 +178,87 @@ class SettingsPage(QWidget):
 
     def _setup_ui(self) -> None:
         """构建设置页布局。"""
-        outer_layout = QVBoxLayout(self)
+        outer_layout = QHBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(14)
 
-        scroll_area = QScrollArea(self)
-        scroll_area.setObjectName("settingsScrollArea")
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_area.viewport().setObjectName("settingsViewport")
+        outer_layout.addWidget(self._build_settings_sidebar())
 
-        content = QWidget(scroll_area)
-        content.setObjectName("settingsContent")
-        main_layout = QVBoxLayout(content)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(14)
+        self._settings_stack = QStackedWidget(self)
+        self._settings_stack.setObjectName("settingsContentStack")
+        self._settings_stack.addWidget(self._build_device_config_page())
+        self._settings_stack.addWidget(self._build_avatar_model_page())
+        self._settings_stack.addWidget(self._build_llm_config_page())
+        outer_layout.addWidget(self._settings_stack, stretch=1)
 
-        main_layout.addWidget(self._build_camera_card())
-        main_layout.addWidget(self._build_microphone_card())
-        main_layout.addWidget(self._build_model_card())
-        main_layout.addWidget(self._build_llm_card())
-        main_layout.addStretch()
-
-        scroll_area.setWidget(content)
-        outer_layout.addWidget(scroll_area)
         self._apply_styles()
+        self._set_active_settings_panel(0)
         self._connect_signals()
+
+    def _build_settings_sidebar(self) -> QFrame:
+        """创建左侧配置分类导航。"""
+        sidebar = QFrame(self)
+        sidebar.setObjectName("settingsSidebar")
+        sidebar.setFixedWidth(148)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(10, 12, 10, 12)
+        layout.setSpacing(8)
+
+        self._settings_nav_buttons: list[QPushButton] = []
+        for index, text in enumerate(("设备配置", "人物模型配置", "LLM模型配置")):
+            button = QPushButton(text, self)
+            button.setObjectName("settingsNavButton")
+            button.setCheckable(True)
+            button.setMinimumHeight(38)
+            button.clicked.connect(lambda _checked=False, page_index=index: self._set_active_settings_panel(page_index))
+            layout.addWidget(button)
+            self._settings_nav_buttons.append(button)
+
+        layout.addStretch()
+        return sidebar
+
+    def _build_device_config_page(self) -> QWidget:
+        """创建设备配置页，包含摄像头和麦克风。"""
+        page = QWidget(self)
+        page.setObjectName("settingsPanelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_camera_card())
+        layout.addWidget(self._build_microphone_card())
+        layout.addStretch()
+        return page
+
+    def _build_avatar_model_page(self) -> QWidget:
+        """创建人物模型配置页。"""
+        page = QWidget(self)
+        page.setObjectName("settingsPanelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_model_card())
+        layout.addStretch()
+        return page
+
+    def _build_llm_config_page(self) -> QWidget:
+        """创建 LLM 模型配置页。"""
+        page = QWidget(self)
+        page.setObjectName("settingsPanelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_llm_card())
+        layout.addStretch()
+        return page
+
+    def _set_active_settings_panel(self, index: int) -> None:
+        """切换右侧配置内容页并同步左侧导航状态。"""
+        self._settings_stack.setCurrentIndex(index)
+        for button_index, button in enumerate(self._settings_nav_buttons):
+            button.setChecked(button_index == index)
+            button.setProperty("active", button_index == index)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def _build_camera_card(self) -> QFrame:
         """创建摄像头参数卡片。"""
@@ -255,6 +317,24 @@ class SettingsPage(QWidget):
         row.addWidget(self._camera_fps, stretch=1)
 
         layout.addLayout(row)
+
+        test_row = QHBoxLayout()
+        test_row.setSpacing(10)
+        test_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        test_row.addWidget(self._create_field_label("连接测试"))
+
+        self._camera_test_button = QPushButton("测试摄像头", self)
+        self._camera_test_button.setObjectName("secondaryButton")
+        self._camera_test_button.setFixedHeight(CONTROL_HEIGHT)
+        self._camera_test_button.clicked.connect(self._start_camera_test)
+        test_row.addWidget(self._camera_test_button)
+
+        self._camera_test_status = QLabel("未测试", self)
+        self._camera_test_status.setObjectName("deviceTestStatus")
+        self._camera_test_status.setProperty("result", "idle")
+        self._camera_test_status.setWordWrap(True)
+        test_row.addWidget(self._camera_test_status, stretch=1)
+        layout.addLayout(test_row)
         return card
 
     def _build_microphone_card(self) -> QFrame:
@@ -304,6 +384,24 @@ class SettingsPage(QWidget):
         row.addWidget(self._mic_block_size)
         row.addStretch()
         layout.addLayout(row)
+
+        test_row = QHBoxLayout()
+        test_row.setSpacing(10)
+        test_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        test_row.addWidget(self._create_field_label("连接测试"))
+
+        self._microphone_test_button = QPushButton("测试麦克风", self)
+        self._microphone_test_button.setObjectName("secondaryButton")
+        self._microphone_test_button.setFixedHeight(CONTROL_HEIGHT)
+        self._microphone_test_button.clicked.connect(self._start_microphone_test)
+        test_row.addWidget(self._microphone_test_button)
+
+        self._microphone_test_status = QLabel("未测试", self)
+        self._microphone_test_status.setObjectName("deviceTestStatus")
+        self._microphone_test_status.setProperty("result", "idle")
+        self._microphone_test_status.setWordWrap(True)
+        test_row.addWidget(self._microphone_test_status, stretch=1)
+        layout.addLayout(test_row)
         return card
 
     def _build_model_card(self) -> QFrame:
@@ -312,7 +410,7 @@ class SettingsPage(QWidget):
         layout = self._create_card_layout(card)
         layout.setSpacing(10)
 
-        title = QLabel("模型配置", self)
+        title = QLabel("人物模型配置", self)
         title.setObjectName("cardTitle")
         layout.addWidget(title)
 
@@ -352,7 +450,7 @@ class SettingsPage(QWidget):
         layout = self._create_card_layout(card)
         layout.setSpacing(10)
 
-        title = QLabel("LLM 配置", self)
+        title = QLabel("LLM模型配置", self)
         title.setObjectName("cardTitle")
         layout.addWidget(title)
 
@@ -383,6 +481,24 @@ class SettingsPage(QWidget):
         self._llm_model_edit.setPlaceholderText("gpt-4o-mini")
         model_row.addWidget(self._llm_model_edit, stretch=1)
         layout.addLayout(model_row)
+
+        test_row = QHBoxLayout()
+        test_row.setSpacing(10)
+        test_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        test_row.addWidget(self._create_field_label("连接测试"))
+
+        self._llm_test_button = QPushButton("测试LLM", self)
+        self._llm_test_button.setObjectName("secondaryButton")
+        self._llm_test_button.setFixedHeight(CONTROL_HEIGHT)
+        self._llm_test_button.clicked.connect(self._start_llm_test)
+        test_row.addWidget(self._llm_test_button)
+
+        self._llm_test_status = QLabel("未测试", self)
+        self._llm_test_status.setObjectName("deviceTestStatus")
+        self._llm_test_status.setProperty("result", "idle")
+        self._llm_test_status.setWordWrap(True)
+        test_row.addWidget(self._llm_test_status, stretch=1)
+        layout.addLayout(test_row)
 
         return card
 
@@ -463,12 +579,33 @@ class SettingsPage(QWidget):
         chevron_path = (Path(__file__).resolve().parent / "assets" / "chevron-down.svg").as_posix()
         style_sheet = (
             """
-            QScrollArea#settingsScrollArea {
+            QStackedWidget#settingsContentStack,
+            QWidget#settingsPanelPage {
                 background: transparent;
+                border: 0;
             }
-            QWidget#settingsViewport,
-            QWidget#settingsContent {
-                background: #F6F8FB;
+            QFrame#settingsSidebar {
+                background: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 8px;
+            }
+            QPushButton#settingsNavButton {
+                background: transparent;
+                border: 0;
+                border-radius: 8px;
+                color: #475569;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 0 12px;
+                text-align: left;
+            }
+            QPushButton#settingsNavButton:hover {
+                background: #F1F5F9;
+                color: #0F172A;
+            }
+            QPushButton#settingsNavButton[active="true"] {
+                background: #EFF6FF;
+                color: #2563EB;
             }
             QFrame#cameraCard,
             QFrame#microphoneCard,
@@ -497,6 +634,23 @@ class SettingsPage(QWidget):
                 color: #EF4444;
                 font-size: 12px;
                 padding-left: 1px;
+            }
+            QLabel#deviceTestStatus {
+                color: #64748B;
+                font-size: 12px;
+                padding: 0 2px;
+            }
+            QLabel#deviceTestStatus[result="success"] {
+                color: #059669;
+                font-weight: 600;
+            }
+            QLabel#deviceTestStatus[result="error"] {
+                color: #DC2626;
+                font-weight: 600;
+            }
+            QLabel#deviceTestStatus[result="testing"] {
+                color: #2563EB;
+                font-weight: 600;
             }
             QLabel#resolutionSeparator {
                 color: #94A3B8;
@@ -634,6 +788,7 @@ class SettingsPage(QWidget):
         self._llm_base_url_edit.textChanged.connect(self._on_setting_changed)
         self._llm_api_key_edit.textChanged.connect(self._on_setting_changed)
         self._llm_model_edit.textChanged.connect(self._on_setting_changed)
+        self.device_test_finished.connect(self._on_device_test_finished)
 
     # ---- 配置加载与保存 ----
 
@@ -725,6 +880,217 @@ class SettingsPage(QWidget):
             selected_index = self._config.microphone_index
         self._populate_microphone_options(int(selected_index))
         self._on_setting_changed()
+
+    # ---- 设备测试 ----
+
+    def _start_camera_test(self) -> None:
+        """在后台测试摄像头能否打开并读取画面。"""
+        if self._camera_test_running:
+            return
+
+        camera_index = self._camera_index.currentData()
+        if camera_index is None:
+            self._set_device_test_status("camera", "error", "连接失败：未选择摄像头")
+            return
+
+        self._camera_test_running = True
+        self._camera_test_button.setEnabled(False)
+        self._set_device_test_status("camera", "testing", "检测中...")
+
+        width = self._camera_width.value()
+        height = self._camera_height.value()
+        fps = int(self._camera_fps.currentText().split()[0])
+        worker = threading.Thread(
+            target=self._run_camera_test,
+            args=(int(camera_index), width, height, fps),
+            name="camera-device-test",
+            daemon=True,
+        )
+        worker.start()
+
+    def _start_microphone_test(self) -> None:
+        """在后台测试麦克风能否打开并采样。"""
+        if self._microphone_test_running:
+            return
+
+        microphone_index = self._microphone_index.currentData()
+        if microphone_index is None:
+            self._set_device_test_status("microphone", "error", "连接失败：未选择麦克风")
+            return
+
+        self._microphone_test_running = True
+        self._microphone_test_button.setEnabled(False)
+        self._set_device_test_status("microphone", "testing", "检测中...")
+
+        sample_rate = int(self._mic_sample_rate.currentText().split()[0])
+        block_size = self._mic_block_size.value()
+        worker = threading.Thread(
+            target=self._run_microphone_test,
+            args=(int(microphone_index), sample_rate, block_size),
+            name="microphone-device-test",
+            daemon=True,
+        )
+        worker.start()
+
+    def _start_llm_test(self) -> None:
+        """在后台测试 LLM 接口是否可用。"""
+        if self._llm_test_running:
+            return
+
+        base_url = self._llm_base_url_edit.text().strip()
+        api_key = self._llm_api_key_edit.text().strip()
+        model = self._llm_model_edit.text().strip()
+        if not api_key or not model:
+            self._set_device_test_status("llm", "error", "连接失败：请先填写 API Key 和模型名称")
+            return
+
+        self._llm_test_running = True
+        self._llm_test_button.setEnabled(False)
+        self._set_device_test_status("llm", "testing", "检测中...")
+
+        worker = threading.Thread(
+            target=self._run_llm_test,
+            args=(base_url, api_key, model),
+            name="llm-device-test",
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_camera_test(self, camera_index: int, width: int, height: int, fps: int) -> None:
+        """后台执行摄像头测试，避免阻塞设置页。"""
+        try:
+            import cv2
+
+            # 只短暂打开摄像头并读取一帧，不进入直播采集循环。
+            capture = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+            try:
+                if not capture.isOpened():
+                    self.device_test_finished.emit("camera", False, f"连接失败：无法打开摄像头 {camera_index}")
+                    return
+
+                capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                capture.set(cv2.CAP_PROP_FPS, fps)
+                success, frame = capture.read()
+                if not success or frame is None:
+                    self.device_test_finished.emit("camera", False, "连接失败：未读取到画面")
+                    return
+
+                frame_height, frame_width = frame.shape[:2]
+                self.device_test_finished.emit("camera", True, f"连接正常，已读取画面 {frame_width}×{frame_height}")
+            finally:
+                capture.release()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("摄像头连接测试失败：%s", exc)
+            self.device_test_finished.emit("camera", False, f"连接失败：{self._format_test_error(exc)}")
+
+    def _run_microphone_test(self, microphone_index: int, sample_rate: int, block_size: int) -> None:
+        """后台执行麦克风测试，确认输入流可以采样。"""
+        try:
+            import sounddevice as sd
+
+            # 打开输入流并读取一小段音频，避免提前启动完整 ASR 链路。
+            frames = max(block_size, int(sample_rate * 0.25))
+            stream = sd.InputStream(
+                device=microphone_index,
+                samplerate=sample_rate,
+                channels=1,
+                dtype="float32",
+                blocksize=block_size,
+            )
+            try:
+                stream.start()
+                samples, overflowed = stream.read(frames)
+            finally:
+                with contextlib.suppress(Exception):
+                    stream.stop()
+                with contextlib.suppress(Exception):
+                    stream.close()
+
+            if samples is None or len(samples) == 0:
+                self.device_test_finished.emit("microphone", False, "连接失败：未采样到音频")
+                return
+
+            suffix = "，采样有溢出" if overflowed else ""
+            self.device_test_finished.emit("microphone", True, f"连接正常，已采样 {len(samples)} 帧{suffix}")
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("麦克风连接测试失败：%s", exc)
+            self.device_test_finished.emit("microphone", False, f"连接失败：{self._format_test_error(exc)}")
+
+    def _run_llm_test(self, base_url: str, api_key: str, model: str) -> None:
+        """后台执行 LLM 测试，确认模型接口可以完成一次短请求。"""
+        try:
+            from openai import OpenAI
+
+            # 只发送一次极短请求，用来验证地址、密钥、模型名称三项是否匹配。
+            client = OpenAI(
+                api_key=api_key,
+                base_url=base_url or None,
+                timeout=10.0,
+            )
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "你是连接测试助手，请用中文短句回答。"},
+                    {"role": "user", "content": "请回复：连接正常"},
+                ],
+                max_tokens=32,
+                temperature=0,
+            )
+            if not response.choices:
+                self.device_test_finished.emit("llm", False, "连接失败：服务端未返回候选结果")
+                return
+
+            message = response.choices[0].message
+            content = str(message.content or "").strip()
+            reasoning_content = str(getattr(message, "reasoning_content", "") or "").strip()
+            if content or reasoning_content:
+                self.device_test_finished.emit("llm", True, "连接正常，模型已响应")
+                return
+
+            # 部分兼容服务会返回 choice 但正文为空；这仍说明地址、密钥、模型名已通过服务端校验。
+            finish_reason = response.choices[0].finish_reason or "unknown"
+            self.device_test_finished.emit("llm", True, f"连接正常，返回为空：{finish_reason}")
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("LLM 连接测试失败：%s", self._format_test_error(exc))
+            self.device_test_finished.emit("llm", False, f"连接失败：{self._format_test_error(exc)}")
+
+    def _on_device_test_finished(self, device_type: str, success: bool, message: str) -> None:
+        """接收后台线程测试结果并刷新界面状态。"""
+        result = "success" if success else "error"
+        self._set_device_test_status(device_type, result, message)
+
+        if device_type == "camera":
+            self._camera_test_running = False
+            self._camera_test_button.setEnabled(True)
+            return
+
+        if device_type == "microphone":
+            self._microphone_test_running = False
+            self._microphone_test_button.setEnabled(True)
+            return
+
+        if device_type == "llm":
+            self._llm_test_running = False
+            self._llm_test_button.setEnabled(True)
+
+    def _set_device_test_status(self, device_type: str, result: str, message: str) -> None:
+        """统一更新设备测试标签样式。"""
+        status_labels = {
+            "camera": self._camera_test_status,
+            "microphone": self._microphone_test_status,
+            "llm": self._llm_test_status,
+        }
+        label = status_labels[device_type]
+        label.setText(message)
+        label.setProperty("result", result)
+        label.style().unpolish(label)
+        label.style().polish(label)
+
+    def _format_test_error(self, exc: Exception) -> str:
+        """把底层异常压缩成适合界面展示的短提示。"""
+        text = str(exc).strip() or exc.__class__.__name__
+        return text if len(text) <= 46 else f"{text[:43]}..."
 
     def _set_combo_value(self, combo_box: QComboBox, text: str) -> None:
         """根据文本设置下拉框当前值。"""
