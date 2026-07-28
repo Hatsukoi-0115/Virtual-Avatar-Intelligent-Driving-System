@@ -8,8 +8,20 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
+from virtual_avatar_system.business.comment_advisor import analyze_audience_comment
 from virtual_avatar_system.ui.log_panel import LogPanel
 
 
@@ -39,6 +51,9 @@ class LiveDashboardPage(QWidget):
         self.update_semantic_label("待识别")
         self.update_emotion_result("中性")
         self.update_current_action("Idle")
+        self.update_recommended_reply("等待观众评论")
+        self.update_explanation_focus("等待评论输入")
+        self._audience_comment_input.clear()
         self.clear_backend_log()
 
     def append_backend_log(self, text: str) -> None:
@@ -92,6 +107,14 @@ class LiveDashboardPage(QWidget):
         """更新当前动作。"""
         self._signal.update.emit("motion", text or "Idle")
 
+    def update_recommended_reply(self, text: str) -> None:
+        """更新当前推荐回复。"""
+        self._signal.update.emit("recommended_reply", text or "等待观众评论")
+
+    def update_explanation_focus(self, text: str) -> None:
+        """更新推荐讲解重点。"""
+        self._signal.update.emit("explanation_focus", text or "等待评论输入")
+
     def _apply_update(self, field: str, text: str) -> None:
         """在 UI 线程中应用状态更新。"""
         label_map = {
@@ -103,20 +126,74 @@ class LiveDashboardPage(QWidget):
             "semantic": self._semantic_value,
             "emotion": self._emotion_value,
             "motion": self._motion_value,
+            "recommended_reply": self._recommended_reply_value,
+            "explanation_focus": self._explanation_focus_value,
         }
         target = label_map.get(field)
         if target is not None:
             target.setText(text)
 
+    def _on_analyze_comment(self) -> None:
+        """分析观众评论并刷新话术建议面板。"""
+        comment = self._audience_comment_input.text()
+        advice = analyze_audience_comment(comment)
+        # 当前最小版用规则模拟 LLM 语义理解，后续可替换为真实平台评论 + LLM 服务。
+        self.update_semantic_label(advice.semantic_label)
+        self.update_recommended_reply(advice.recommended_reply)
+        self.update_explanation_focus(advice.explanation_focus)
+        self._latest_comment_value.setText(advice.audience_comment or "等待观众评论")
+        if advice.audience_comment:
+            self.append_backend_log(f"[Comment] 观众评论={advice.audience_comment} 语义={advice.semantic_label}")
+
     def _setup_ui(self) -> None:
         """构建运行状态页布局。"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        outer_layout = QHBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(14)
 
-        status_card = QFrame(self)
+        outer_layout.addWidget(self._build_sidebar())
+
+        self._dashboard_stack = QStackedWidget(self)
+        self._dashboard_stack.setObjectName("dashboardContentStack")
+        self._dashboard_stack.addWidget(self._build_status_page())
+        self._dashboard_stack.addWidget(self._build_comment_advice_page())
+        self._dashboard_stack.addWidget(self._build_backend_log_page())
+        outer_layout.addWidget(self._dashboard_stack, stretch=1)
+        self._apply_styles()
+        self._set_active_panel(0)
+
+    def _build_sidebar(self) -> QFrame:
+        """创建左侧功能切换栏。"""
+        sidebar = QFrame(self)
+        sidebar.setObjectName("dashboardSidebar")
+        sidebar.setFixedWidth(132)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(10, 12, 10, 12)
+        layout.setSpacing(8)
+
+        self._panel_buttons: list[QPushButton] = []
+        for index, text in enumerate(("实时状态", "话术建议", "后台输出")):
+            button = QPushButton(text, self)
+            button.setObjectName("dashboardNavButton")
+            button.setCheckable(True)
+            button.setMinimumHeight(38)
+            button.clicked.connect(lambda _checked=False, page_index=index: self._set_active_panel(page_index))
+            layout.addWidget(button)
+            self._panel_buttons.append(button)
+
+        layout.addStretch()
+        return sidebar
+
+    def _build_status_page(self) -> QWidget:
+        """创建右侧实时状态内容页。"""
+        page = QWidget(self)
+        page.setObjectName("dashboardPanelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        status_card = QFrame(page)
         status_card.setObjectName("dashboardCard")
-        status_card.setMinimumHeight(430)
         status_layout = QGridLayout(status_card)
         status_layout.setContentsMargins(18, 16, 18, 18)
         status_layout.setHorizontalSpacing(12)
@@ -124,9 +201,9 @@ class LiveDashboardPage(QWidget):
         status_layout.setRowMinimumHeight(0, 30)
         status_layout.setRowMinimumHeight(1, 78)
         status_layout.setRowMinimumHeight(2, 78)
-        status_layout.setRowMinimumHeight(3, 78)
+        status_layout.setRowMinimumHeight(3, 82)
         status_layout.setRowMinimumHeight(4, 82)
-        status_layout.setRowMinimumHeight(5, 82)
+        status_layout.setRowMinimumHeight(5, 78)
 
         title = QLabel("实时状态", self)
         title.setObjectName("dashboardTitle")
@@ -151,10 +228,92 @@ class LiveDashboardPage(QWidget):
         status_layout.addWidget(self._create_status_tile("当前动作", self._motion_value), 5, 1)
 
         layout.addWidget(status_card)
-        self._log_panel = LogPanel(self)
-        layout.addWidget(self._log_panel, stretch=1)
         layout.addStretch()
-        self._apply_styles()
+        return page
+
+    def _build_comment_advice_page(self) -> QWidget:
+        """创建右侧话术建议内容页。"""
+        page = QWidget(self)
+        page.setObjectName("dashboardPanelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._build_comment_advice_card())
+        layout.addStretch()
+        return page
+
+    def _build_backend_log_page(self) -> QWidget:
+        """创建右侧后台输出内容页。"""
+        page = QWidget(self)
+        page.setObjectName("dashboardPanelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        card = QFrame(page)
+        card.setObjectName("backendLogCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(18, 16, 18, 18)
+        card_layout.setSpacing(10)
+
+        self._log_panel = LogPanel(card)
+        card_layout.addWidget(self._log_panel, stretch=1)
+        layout.addWidget(card, stretch=1)
+        return page
+
+    def _set_active_panel(self, index: int) -> None:
+        """切换右侧内容页并同步左侧导航状态。"""
+        self._dashboard_stack.setCurrentIndex(index)
+        for button_index, button in enumerate(self._panel_buttons):
+            button.setChecked(button_index == index)
+            button.setProperty("active", button_index == index)
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+    def _build_comment_advice_card(self) -> QFrame:
+        """创建观众评论和话术建议面板。"""
+        card = QFrame(self)
+        card.setObjectName("adviceCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("话术建议面板", self)
+        title.setObjectName("dashboardTitle")
+        layout.addWidget(title)
+
+        input_row = QHBoxLayout()
+        input_row.setContentsMargins(0, 0, 0, 0)
+        input_row.setSpacing(10)
+
+        self._audience_comment_input = QLineEdit(self)
+        self._audience_comment_input.setObjectName("audienceCommentInput")
+        self._audience_comment_input.setPlaceholderText("输入观众评论，例如：这个适合学生用吗？")
+        self._audience_comment_input.returnPressed.connect(self._on_analyze_comment)
+        input_row.addWidget(self._audience_comment_input, stretch=1)
+
+        analyze_button = QPushButton("分析评论", self)
+        analyze_button.setObjectName("analyzeCommentButton")
+        analyze_button.setFixedSize(96, 36)
+        analyze_button.clicked.connect(self._on_analyze_comment)
+        input_row.addWidget(analyze_button)
+        layout.addLayout(input_row)
+
+        self._latest_comment_value = self._create_value_label()
+        self._latest_comment_value.setText("等待观众评论")
+        layout.addWidget(self._create_status_tile("当前观众评论", self._latest_comment_value, wide=True))
+
+        advice_grid = QGridLayout()
+        advice_grid.setContentsMargins(0, 0, 0, 0)
+        advice_grid.setHorizontalSpacing(12)
+        advice_grid.setVerticalSpacing(8)
+        self._recommended_reply_value = self._create_value_label()
+        self._explanation_focus_value = self._create_value_label()
+        advice_grid.addWidget(self._create_status_tile("当前推荐回复", self._recommended_reply_value, wide=True), 0, 0)
+        advice_grid.addWidget(self._create_status_tile("推荐讲解重点", self._explanation_focus_value, wide=True), 1, 0)
+        layout.addLayout(advice_grid)
+        layout.addStretch()
+        return card
 
     def _create_status_tile(self, label_text: str, value_label: QLabel, wide: bool = False) -> QFrame:
         """创建一块状态信息区域。"""
@@ -190,6 +349,26 @@ class LiveDashboardPage(QWidget):
                 border: 1px solid #E5E7EB;
                 border-radius: 8px;
             }
+            QFrame#dashboardSidebar {
+                background: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 8px;
+            }
+            QStackedWidget#dashboardContentStack,
+            QWidget#dashboardPanelPage {
+                background: transparent;
+                border: 0;
+            }
+            QFrame#adviceCard {
+                background: #FFFFFF;
+                border: 1px solid #DDE7F3;
+                border-radius: 8px;
+            }
+            QFrame#backendLogCard {
+                background: #FFFFFF;
+                border: 1px solid #DDE7F3;
+                border-radius: 8px;
+            }
             QFrame#dashboardTile,
             QFrame#dashboardWideTile {
                 background: #F8FAFC;
@@ -210,6 +389,47 @@ class LiveDashboardPage(QWidget):
                 color: #0F172A;
                 font-size: 14px;
                 font-weight: 600;
+            }
+            QPushButton#dashboardNavButton {
+                background: transparent;
+                border: 0;
+                border-radius: 8px;
+                color: #475569;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 0 12px;
+                text-align: left;
+            }
+            QPushButton#dashboardNavButton:hover {
+                background: #F1F5F9;
+                color: #0F172A;
+            }
+            QPushButton#dashboardNavButton[active="true"] {
+                background: #EFF6FF;
+                color: #2563EB;
+            }
+            QLineEdit#audienceCommentInput {
+                background: #FFFFFF;
+                border: 1px solid #CBD5E1;
+                border-radius: 8px;
+                color: #0F172A;
+                font-size: 13px;
+                min-height: 34px;
+                padding: 0 12px;
+            }
+            QLineEdit#audienceCommentInput:focus {
+                border: 1px solid #2563EB;
+            }
+            QPushButton#analyzeCommentButton {
+                background: #2563EB;
+                border: 0;
+                border-radius: 8px;
+                color: #FFFFFF;
+                font-size: 13px;
+                font-weight: 700;
+            }
+            QPushButton#analyzeCommentButton:hover {
+                background: #1D4ED8;
             }
             """
         )

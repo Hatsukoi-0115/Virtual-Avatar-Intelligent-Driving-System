@@ -23,8 +23,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -172,31 +172,87 @@ class SettingsPage(QWidget):
 
     def _setup_ui(self) -> None:
         """构建设置页布局。"""
-        outer_layout = QVBoxLayout(self)
+        outer_layout = QHBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(14)
 
-        scroll_area = QScrollArea(self)
-        scroll_area.setObjectName("settingsScrollArea")
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_area.viewport().setObjectName("settingsViewport")
+        outer_layout.addWidget(self._build_settings_sidebar())
 
-        content = QWidget(scroll_area)
-        content.setObjectName("settingsContent")
-        main_layout = QVBoxLayout(content)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(14)
+        self._settings_stack = QStackedWidget(self)
+        self._settings_stack.setObjectName("settingsContentStack")
+        self._settings_stack.addWidget(self._build_device_config_page())
+        self._settings_stack.addWidget(self._build_avatar_model_page())
+        self._settings_stack.addWidget(self._build_llm_config_page())
+        outer_layout.addWidget(self._settings_stack, stretch=1)
 
-        main_layout.addWidget(self._build_camera_card())
-        main_layout.addWidget(self._build_microphone_card())
-        main_layout.addWidget(self._build_model_card())
-        main_layout.addWidget(self._build_llm_card())
-        main_layout.addStretch()
-
-        scroll_area.setWidget(content)
-        outer_layout.addWidget(scroll_area)
         self._apply_styles()
+        self._set_active_settings_panel(0)
         self._connect_signals()
+
+    def _build_settings_sidebar(self) -> QFrame:
+        """创建左侧配置分类导航。"""
+        sidebar = QFrame(self)
+        sidebar.setObjectName("settingsSidebar")
+        sidebar.setFixedWidth(148)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(10, 12, 10, 12)
+        layout.setSpacing(8)
+
+        self._settings_nav_buttons: list[QPushButton] = []
+        for index, text in enumerate(("设备配置", "人物模型配置", "LLM模型配置")):
+            button = QPushButton(text, self)
+            button.setObjectName("settingsNavButton")
+            button.setCheckable(True)
+            button.setMinimumHeight(38)
+            button.clicked.connect(lambda _checked=False, page_index=index: self._set_active_settings_panel(page_index))
+            layout.addWidget(button)
+            self._settings_nav_buttons.append(button)
+
+        layout.addStretch()
+        return sidebar
+
+    def _build_device_config_page(self) -> QWidget:
+        """创建设备配置页，包含摄像头和麦克风。"""
+        page = QWidget(self)
+        page.setObjectName("settingsPanelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_camera_card())
+        layout.addWidget(self._build_microphone_card())
+        layout.addStretch()
+        return page
+
+    def _build_avatar_model_page(self) -> QWidget:
+        """创建人物模型配置页。"""
+        page = QWidget(self)
+        page.setObjectName("settingsPanelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_model_card())
+        layout.addStretch()
+        return page
+
+    def _build_llm_config_page(self) -> QWidget:
+        """创建 LLM 模型配置页。"""
+        page = QWidget(self)
+        page.setObjectName("settingsPanelPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_llm_card())
+        layout.addStretch()
+        return page
+
+    def _set_active_settings_panel(self, index: int) -> None:
+        """切换右侧配置内容页并同步左侧导航状态。"""
+        self._settings_stack.setCurrentIndex(index)
+        for button_index, button in enumerate(self._settings_nav_buttons):
+            button.setChecked(button_index == index)
+            button.setProperty("active", button_index == index)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def _build_camera_card(self) -> QFrame:
         """创建摄像头参数卡片。"""
@@ -312,7 +368,7 @@ class SettingsPage(QWidget):
         layout = self._create_card_layout(card)
         layout.setSpacing(10)
 
-        title = QLabel("模型配置", self)
+        title = QLabel("人物模型配置", self)
         title.setObjectName("cardTitle")
         layout.addWidget(title)
 
@@ -352,7 +408,7 @@ class SettingsPage(QWidget):
         layout = self._create_card_layout(card)
         layout.setSpacing(10)
 
-        title = QLabel("LLM 配置", self)
+        title = QLabel("LLM模型配置", self)
         title.setObjectName("cardTitle")
         layout.addWidget(title)
 
@@ -463,12 +519,33 @@ class SettingsPage(QWidget):
         chevron_path = (Path(__file__).resolve().parent / "assets" / "chevron-down.svg").as_posix()
         style_sheet = (
             """
-            QScrollArea#settingsScrollArea {
+            QStackedWidget#settingsContentStack,
+            QWidget#settingsPanelPage {
                 background: transparent;
+                border: 0;
             }
-            QWidget#settingsViewport,
-            QWidget#settingsContent {
-                background: #F6F8FB;
+            QFrame#settingsSidebar {
+                background: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 8px;
+            }
+            QPushButton#settingsNavButton {
+                background: transparent;
+                border: 0;
+                border-radius: 8px;
+                color: #475569;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 0 12px;
+                text-align: left;
+            }
+            QPushButton#settingsNavButton:hover {
+                background: #F1F5F9;
+                color: #0F172A;
+            }
+            QPushButton#settingsNavButton[active="true"] {
+                background: #EFF6FF;
+                color: #2563EB;
             }
             QFrame#cameraCard,
             QFrame#microphoneCard,
