@@ -126,11 +126,16 @@ class LiveSpeechUnderstandingService:
         self._thread.start()
         print("[C] 语音/情绪/LLM 链路已启动", flush=True)
 
-    def stop(self) -> None:
+    def stop(self, progress_callback: Callable[[], None] | None = None) -> None:
         """停止后台线程并释放识别模块。"""
         self._stop_event.set()
         if self._thread is not None:
-            self._thread.join(timeout=5.0)
+            deadline = time.monotonic() + 5.0
+            while self._thread.is_alive() and time.monotonic() < deadline:
+                # 分段等待，让 UI 停止页的加载动画可以持续刷新。
+                self._thread.join(timeout=0.05)
+                if progress_callback is not None:
+                    progress_callback()
         self.audio_source.stop()
         self.audio_source.clear()
         self.recognizer.close()

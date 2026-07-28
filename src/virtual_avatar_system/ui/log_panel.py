@@ -6,8 +6,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, QObject, Signal
-from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+from PySide6.QtCore import QSize
+from PySide6.QtGui import QColor, QIcon, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -18,6 +21,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
 
 class LogSignal(QObject):
@@ -63,24 +68,46 @@ class LogPanel(QWidget):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(12)
 
         # 标题栏
         header = QFrame(self)
         header.setObjectName("logPanelHeader")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(2, 4, 2, 6)
-        header_layout.setSpacing(8)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(12)
 
-        title_label = QLabel("后端输出", self)
+        icon_badge = QFrame(self)
+        icon_badge.setObjectName("logHeaderIconBadge")
+        icon_badge.setFixedSize(42, 42)
+        icon_layout = QVBoxLayout(icon_badge)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+
+        icon_label = QLabel(self)
+        icon_label.setObjectName("logHeaderIcon")
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_label.setPixmap(QIcon(str(ASSETS_DIR / "terminal.svg")).pixmap(QSize(22, 22)))
+        icon_layout.addWidget(icon_label)
+        header_layout.addWidget(icon_badge)
+
+        title_group = QVBoxLayout()
+        title_group.setContentsMargins(0, 0, 0, 0)
+        title_group.setSpacing(3)
+
+        title_label = QLabel("后台输出", self)
         title_label.setObjectName("logPanelTitle")
-        header_layout.addWidget(title_label)
+        title_group.addWidget(title_label)
+
+        subtitle_label = QLabel("实时展示摄像头、麦克风、ASR、LLM 与人物驱动日志", self)
+        subtitle_label.setObjectName("logPanelSubtitle")
+        title_group.addWidget(subtitle_label)
+        header_layout.addLayout(title_group, stretch=1)
 
         header_layout.addStretch()
 
         clear_button = QPushButton("清空", self)
         clear_button.setObjectName("logClearButton")
-        clear_button.setFixedSize(48, 24)
+        clear_button.setFixedSize(62, 32)
         clear_button.clicked.connect(self.clear)
         header_layout.addWidget(clear_button)
 
@@ -91,7 +118,7 @@ class LogPanel(QWidget):
         self._log_view.setObjectName("logView")
         self._log_view.setReadOnly(True)
         self._log_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._log_view.setMinimumHeight(360)
+        self._log_view.setMinimumHeight(390)
         self._log_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self._log_view, stretch=1)
 
@@ -102,42 +129,62 @@ class LogPanel(QWidget):
             QFrame#logPanelHeader {
                 background: transparent;
             }
+            QFrame#logHeaderIconBadge {
+                background: #EAF5FF;
+                border: 0;
+                border-radius: 10px;
+            }
+            QLabel#logHeaderIcon {
+                background: transparent;
+                border: 0;
+            }
             QLabel#logPanelTitle {
                 color: #0F172A;
-                font-size: 13px;
-                font-weight: 700;
+                font-size: 18px;
+                font-weight: 800;
+            }
+            QLabel#logPanelSubtitle {
+                color: #64748B;
+                font-size: 12px;
+                font-weight: 600;
             }
             QPushButton#logClearButton {
-                background: #FFFFFF;
-                border: 1px solid #E2E8F0;
-                border-radius: 6px;
-                color: #475569;
-                font-size: 11px;
-                padding: 2px 8px;
+                background: #F8FAFC;
+                border: 1px solid #DDE3EA;
+                border-radius: 7px;
+                color: #0F5FD7;
+                font-size: 12px;
+                font-weight: 700;
+                padding: 0 12px;
             }
             QPushButton#logClearButton:hover {
-                background: #E2E8F0;
-                color: #1E293B;
+                background: #EAF5FF;
+                border-color: #9CCBFF;
+                color: #1677FF;
             }
             QTextEdit#logView {
-                background: #0F172A;
+                background: #0B1220;
                 border: 1px solid #1E293B;
-                border-radius: 8px;
-                color: #E2E8F0;
+                border-radius: 10px;
+                color: #DDE7F3;
                 font-family: "Cascadia Code", "Consolas", "Noto Sans SC", monospace;
                 font-size: 12px;
-                padding: 10px 12px;
+                line-height: 1.35;
+                padding: 12px 14px;
                 selection-background-color: #334155;
             }
             QTextEdit#logView QScrollBar:vertical {
-                background: #0F172A;
+                background: #0B1220;
                 width: 6px;
                 margin: 0;
             }
             QTextEdit#logView QScrollBar::handle:vertical {
-                background: #475569;
+                background: #64748B;
                 border-radius: 3px;
                 min-height: 30px;
+            }
+            QTextEdit#logView QScrollBar::handle:vertical:hover {
+                background: #94A3B8;
             }
             QTextEdit#logView QScrollBar::add-line:vertical,
             QTextEdit#logView QScrollBar::sub-line:vertical {

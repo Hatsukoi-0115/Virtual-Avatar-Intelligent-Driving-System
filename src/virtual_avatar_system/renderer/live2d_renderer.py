@@ -18,6 +18,7 @@ import queue
 import time
 from ctypes import wintypes
 from pathlib import Path
+from typing import Callable
 
 import live2d.v3 as live2d
 import pygame
@@ -451,16 +452,25 @@ class Live2DRenderer:
             always_on_top,
         )
 
-    def stop(self) -> None:
+    def stop(self, progress_callback: Callable[[], None] | None = None) -> None:
         """停止渲染进程并释放资源。"""
         if self._stop_event is not None:
             self._stop_event.set()
 
         if self._process is not None:
-            self._process.join(timeout=3.0)
+            deadline = time.monotonic() + 3.0
+            while self._process.is_alive() and time.monotonic() < deadline:
+                # 渲染进程退出可能需要释放 OpenGL/pygame 资源，等待期间保持 UI 动画刷新。
+                self._process.join(timeout=0.05)
+                if progress_callback is not None:
+                    progress_callback()
             if self._process.is_alive():
                 self._process.terminate()
-                self._process.join(timeout=2.0)
+                deadline = time.monotonic() + 2.0
+                while self._process.is_alive() and time.monotonic() < deadline:
+                    self._process.join(timeout=0.05)
+                    if progress_callback is not None:
+                        progress_callback()
 
         self._process = None
         self._command_queue = None

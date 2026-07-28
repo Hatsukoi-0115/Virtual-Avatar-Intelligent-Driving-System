@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from typing import Callable
 
 import cv2
 
@@ -93,12 +94,17 @@ class CameraFrameSource:
         self._thread.start()
         LOGGER.info("摄像头采集已启动：camera=%s %sx%s", self._camera_index, self._width, self._height)
 
-    def stop(self) -> None:
+    def stop(self, progress_callback: Callable[[], None] | None = None) -> None:
         """停止采集并释放摄像头。"""
         self._running = False
 
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=3.0)
+            deadline = time.monotonic() + 3.0
+            while self._thread.is_alive() and time.monotonic() < deadline:
+                # 分段等待，避免停止摄像头时主窗口加载动画卡住。
+                self._thread.join(timeout=0.05)
+                if progress_callback is not None:
+                    progress_callback()
 
         if self._capture and self._capture.isOpened():
             self._capture.release()
