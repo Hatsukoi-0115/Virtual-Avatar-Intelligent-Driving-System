@@ -1661,7 +1661,24 @@ class SettingsPage(QWidget):
 
             # 再启动一次真实 Live2D 渲染，等待第一帧完成后立即关闭。
             renderer = Live2DRenderer()
-            renderer.start(model_path, window_size=(240, 360), always_on_top=False)
+            # 加载参数映射表，确保测试时使用正确的参数 ID
+            from virtual_avatar_system.config.app_config import load_config, load_param_mappings
+            # 从配置中反向查找当前路径对应的模型名，找不到则用父目录名作为 fallback
+            config = load_config()
+            test_model_name = ""
+            for name, path_str in config.model_paths.items():
+                if resolve_project_path(path_str) == model_path:
+                    test_model_name = name
+                    break
+            if not test_model_name:
+                test_model_name = model_path.parent.name
+            test_mappings = load_param_mappings(test_model_name)
+            renderer.start(
+                model_path,
+                window_size=(240, 360),
+                always_on_top=False,
+                param_mappings=test_mappings if test_mappings else None,
+            )
             # Live2D 首次加载会解析动作、表情和纹理资源，部分机器上会超过 8 秒。
             deadline = time.monotonic() + 15.0
             while time.monotonic() < deadline:

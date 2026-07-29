@@ -299,6 +299,7 @@ def main() -> None:
     from virtual_avatar_system.config.app_config import (
         get_model_path,
         load_config,
+        load_param_mappings,
         resolve_project_path,
         save_config,
     )
@@ -544,10 +545,13 @@ def main() -> None:
             # Live2D 窗口使用配置中的紧凑尺寸，减少透明窗口对其他应用的遮挡。
             main_window.update_startup_stage("正在加载模型和渲染人物...")
             _flush_ui_events()
+            # 加载当前模型的参数 ID 映射表，适配不同命名规范的模型
+            param_mappings = load_param_mappings(main_window.config.model_name)
             live2d_renderer.start(
                 resolve_project_path(get_model_path(main_window.config)),
                 window_size=(current_config.preview_width, current_config.preview_height),
                 always_on_top=current_config.preview_always_on_top,
+                param_mappings=param_mappings if param_mappings else None,
             )
             main_window.update_startup_stage("正在加载模型和渲染人物...")
             _flush_ui_events()

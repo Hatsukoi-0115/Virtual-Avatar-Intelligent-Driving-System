@@ -196,6 +196,7 @@ def _apply_avatar_output(
     last_expression: str,
     last_motion: tuple[str, int],
     motion_playing: bool,
+    param_map: dict[str, str] | None = None,
 ) -> tuple[str, tuple[str, int], bool]:
     """把控制层输出映射到 Live2D 参数。
 
@@ -205,11 +206,15 @@ def _apply_avatar_output(
         last_expression: 上一次设置的表情
         last_motion: 上一次设置的动作 (group, index)
         motion_playing: 当前是否有动作正在播放
+        param_map: 参数 ID 映射表（代码内部 ID → 模型实际 ID），为 None 时直接使用代码内部 ID
 
     Returns:
         (当前表情, 当前动作, 动作是否正在播放)
     """
-   # 动作中断：人脸重新检测到时立即停止待机动作，恢复实时驱动
+    # 如果没有传入映射表，使用空字典（直接使用代码内部 ID）
+    pm = param_map or {}  # type: dict[str, str]
+
+    # 动作中断：人脸重新检测到时立即停止待机动作，恢复实时驱动
     # 不依赖 motion_playing 标志，因为该标志在 MOTION_MIN_DURATION 后会自动置 False，
     # 但实际动作可能仍在播放（循环或时长超过最小持续时间）
     if output.interrupt_motion and not model.IsMotionFinished():
@@ -223,16 +228,17 @@ def _apply_avatar_output(
         last_motion = ("", 0)
 
     # 更新基础参数（头部姿态、眼部、嘴部）
-    model.SetParameterValue("PARAM_ANGLE_X", output.param_angle_x)
-    model.SetParameterValue("PARAM_ANGLE_Y", output.param_angle_y)
-    model.SetParameterValue("PARAM_ANGLE_Z", output.param_angle_z)
+    # 通过 param_map 翻译参数 ID，支持不同模型的命名规范
+    model.SetParameterValue(pm.get("PARAM_ANGLE_X", "PARAM_ANGLE_X"), output.param_angle_x)
+    model.SetParameterValue(pm.get("PARAM_ANGLE_Y", "PARAM_ANGLE_Y"), output.param_angle_y)
+    model.SetParameterValue(pm.get("PARAM_ANGLE_Z", "PARAM_ANGLE_Z"), output.param_angle_z)
     # 身体姿态
-    model.SetParameterValue("PARAM_BODY_ANGLE_X", output.param_body_angle_x)
-    model.SetParameterValue("PARAM_BODY_ANGLE_Y", output.param_body_angle_y)
-    model.SetParameterValue("PARAM_BODY_ANGLE_Z", output.param_body_angle_z)
-    model.SetParameterValue("PARAM_EYE_L_OPEN", output.param_eye_l_open)
-    model.SetParameterValue("PARAM_EYE_R_OPEN", output.param_eye_r_open)
-    model.SetParameterValue("PARAM_MOUTH_OPEN_Y", output.param_mouth_open_y)
+    model.SetParameterValue(pm.get("PARAM_BODY_ANGLE_X", "PARAM_BODY_ANGLE_X"), output.param_body_angle_x)
+    model.SetParameterValue(pm.get("PARAM_BODY_ANGLE_Y", "PARAM_BODY_ANGLE_Y"), output.param_body_angle_y)
+    model.SetParameterValue(pm.get("PARAM_BODY_ANGLE_Z", "PARAM_BODY_ANGLE_Z"), output.param_body_angle_z)
+    model.SetParameterValue(pm.get("PARAM_EYE_L_OPEN", "PARAM_EYE_L_OPEN"), output.param_eye_l_open)
+    model.SetParameterValue(pm.get("PARAM_EYE_R_OPEN", "PARAM_EYE_R_OPEN"), output.param_eye_r_open)
+    model.SetParameterValue(pm.get("PARAM_MOUTH_OPEN_Y", "PARAM_MOUTH_OPEN_Y"), output.param_mouth_open_y)
 
     # 表情：允许被新的表情打断
     if output.expression and output.expression != last_expression:
@@ -259,6 +265,7 @@ def _render_worker(
     command_queue: mp.Queue[AvatarOutputState],
     stop_event: mp.Event,
     ready_event: mp.Event,
+    param_mappings: dict[str, str] | None = None,
 ) -> None:
     """独立渲染进程入口。"""
     _configure_logging()
@@ -356,7 +363,7 @@ def _render_worker(
                 LOGGER.debug("动作播放完成")
 
             last_expression, last_motion, motion_playing = _apply_avatar_output(
-                model, latest_output, last_expression, last_motion, motion_playing
+                model, latest_output, last_expression, last_motion, motion_playing, param_mappings
             )
             
             # 如果播放了新动作，记录开始时间
@@ -367,7 +374,10 @@ def _render_worker(
             breath_phase += BREATH_SPEED
             if breath_phase > 2.0 * 3.14159:
                 breath_phase -= 2.0 * 3.14159
-            model.SetParameterValue("PARAM_BREATH", (math.sin(breath_phase) + 1.0) / 2.0 * BREATH_AMPLITUDE)
+            model.SetParameterValue(
+                (param_mappings or {}).get("PARAM_BREATH", "PARAM_BREATH"),
+                (math.sin(breath_phase) + 1.0) / 2.0 * BREATH_AMPLITUDE,
+            )
 
             # 先更新模型，再绘制当前帧。
             model.Update()
@@ -413,8 +423,17 @@ class Live2DRenderer:
         model_json_path: Path,
         window_size: tuple[int, int] | None = None,
         always_on_top: bool = True,
+        param_mappings: dict[str, str] | None = None,
     ) -> None:
-        """启动 Live2D 渲染窗口。"""
+        """启动 Live2D 渲染窗口。
+
+        Args:
+            model_json_path: 模型 JSON 入口文件路径
+            window_size: 窗口尺寸，None 使用默认值
+            always_on_top: 是否置顶
+            param_mappings: 参数 ID 映射表（代码内部 ID → 模型实际 ID），
+                           用于适配不同命名规范的 Live2D 模型
+        """
         if self.is_running:
             LOGGER.warning("Live2D 渲染进程已在运行")
             return
@@ -440,6 +459,7 @@ class Live2DRenderer:
                 self._command_queue,
                 self._stop_event,
                 self._ready_event,
+                param_mappings,
             ),
             daemon=True,
         )

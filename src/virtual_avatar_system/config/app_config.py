@@ -18,6 +18,7 @@ PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
 CONFIG_DIR: Final[Path] = PROJECT_ROOT / "configs"
 CONFIG_FILE: Final[Path] = CONFIG_DIR / "app_config.json"
 ENV_FILE: Final[Path] = PROJECT_ROOT / ".env"
+PARAM_MAPPINGS_PATH: Final[Path] = CONFIG_DIR / "param_mappings.json"
 DEFAULT_MODEL_PATH: Final[str] = "models/haru_ja/runtime/haru.model3.json"
 DEFAULT_EMOTION_MODEL_PATH: Final[str] = "models/hf_cache/Johnson8187__Chinese-Emotion-Small"
 DEFAULT_COURSE_QA_PROMPT: Final[str] = """直播内容：
@@ -257,3 +258,27 @@ def _load_llm_env_fallback(config: AppConfig) -> None:
     config.llm_base_url = config.llm_base_url or env_values.get("LLM_BASE_URL", "")
     config.llm_api_key = config.llm_api_key or env_values.get("LLM_API_KEY", "")
     config.llm_model = config.llm_model or env_values.get("LLM_MODEL", "")
+
+
+def load_param_mappings(model_name: str) -> dict[str, str]:
+    """加载指定模型的参数 ID 映射表。
+
+    不同 Live2D 模型可能使用不同的参数命名规范（如 haru_ja 的 PARAM_ANGLE_X
+    与 Cubism 5.x 标准的 ParamAngleX），通过映射表统一翻译为代码内部使用的 ID。
+
+    返回 {代码内部ID: 模型实际ID} 的映射字典。
+    """
+    if not PARAM_MAPPINGS_PATH.exists():
+        LOGGER.info("参数映射文件不存在，使用默认映射：%s", PARAM_MAPPINGS_PATH)
+        return {}
+
+    try:
+        with PARAM_MAPPINGS_PATH.open("r", encoding="utf-8") as f:
+            all_mappings: dict[str, dict[str, str]] = json.load(f)
+        mappings = all_mappings.get(model_name, {})
+        if not mappings:
+            LOGGER.info("模型 '%s' 未在参数映射中配置，将直接使用代码内部 ID", model_name)
+        return mappings
+    except (json.JSONDecodeError, TypeError) as exc:
+        LOGGER.warning("参数映射文件解析失败：%s", exc)
+        return {}
