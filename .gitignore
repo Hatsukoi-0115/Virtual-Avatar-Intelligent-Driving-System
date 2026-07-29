@@ -22,3 +22,6 @@ run-logs/
 
 # Environment secrets
 .env
+
+# 本地配置文件（包含设备编号、API Key 等敏感/个人偏好）
+configs/
