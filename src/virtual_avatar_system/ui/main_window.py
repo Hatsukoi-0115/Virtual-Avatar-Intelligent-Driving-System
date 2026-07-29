@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QDateTime, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -40,12 +40,56 @@ from virtual_avatar_system.ui.system_tray import AppSystemTray
 
 LOGGER = logging.getLogger(__name__)
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+BG_IMAGE_PATH = ASSETS_DIR / "BG.jpg"
+# 背景图透明度（0.0=完全透明, 1.0=完全不透明），配合半透明部件可见背景内容
+BG_OPACITY: float = 0.30
 CONFIG_WINDOW_SIZE: tuple[int, int] = (820, 700)
 CONFIG_MIN_SIZE: tuple[int, int] = (780, 640)
 CONFIG_MAX_WIDTH = 840
 LOADING_WINDOW_SIZE: tuple[int, int] = (480, 340)
 LOADING_MIN_SIZE: tuple[int, int] = (460, 320)
 LOADING_MAX_WIDTH = 540
+
+
+class _BackgroundWidget(QWidget):
+    """带背景图绘制能力的容器控件。
+
+    在 paintEvent 中先绘制渐变色底，再叠加半透明背景图，
+    最后委托 QWidget 默认行为绘制子控件。
+    """
+
+    # 渐变色底，与原始样式保持一致，作为背景图不存在时的回退
+    _GRADIENT_START = QColor("#F8FBFF")
+    _GRADIENT_MID = QColor("#F4F8FC")
+    _GRADIENT_END = QColor("#EEF6FF")
+
+    def __init__(self, bg_pixmap: QPixmap, opacity: float, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._bg_pixmap = bg_pixmap
+        self._opacity = max(0.0, min(1.0, opacity))
+
+    def paintEvent(self, event) -> None:
+        """绘制渐变色底 + 半透明背景图，再交默认绘制处理子控件。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # 渐变色底（垂直方向），作为背景图不存在或加载失败时的回退
+        gradient = painter.brush()
+        # 先用纯色填充整个区域，避免子控件区域透出系统默认背景
+        painter.fillRect(self.rect(), self._GRADIENT_START)
+        # 叠加背景图
+        if not self._bg_pixmap.isNull():
+            scaled = self._bg_pixmap.scaled(
+                self.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            painter.setOpacity(self._opacity)
+            x = (self.width() - scaled.width()) // 2
+            y = (self.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+            painter.setOpacity(1.0)
+        painter.end()
+        # 父类 paintEvent 负责绘制子控件
+        super().paintEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -227,7 +271,15 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self) -> None:
         """构建主窗口内容。"""
-        central = QWidget(self)
+        # 加载背景图，若文件不存在则退化为纯色渐变
+        bg_pixmap = QPixmap()
+        if BG_IMAGE_PATH.exists():
+            bg_pixmap = QPixmap(str(BG_IMAGE_PATH))
+            LOGGER.info("已加载 UI 背景图：%s", BG_IMAGE_PATH)
+        else:
+            LOGGER.warning("UI 背景图不存在，使用纯色渐变：%s", BG_IMAGE_PATH)
+
+        central = _BackgroundWidget(bg_pixmap, BG_OPACITY, self)
         central.setObjectName("root")
         self.setCentralWidget(central)
 
@@ -422,7 +474,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QWidget#root {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #F8FBFF, stop:0.58 #F4F8FC, stop:1 #EEF6FF);
+                /* 背景由 _BackgroundWidget.paintEvent 绘制 BG.jpg + 渐变色 */
                 color: #0F172A;
                 font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
                 font-size: 13px;

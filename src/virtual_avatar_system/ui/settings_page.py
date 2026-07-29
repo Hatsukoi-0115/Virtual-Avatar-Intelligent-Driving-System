@@ -618,7 +618,11 @@ class SettingsPage(QWidget):
         return card
 
     def _build_model_card(self) -> QFrame:
-        """创建模型路径卡片。"""
+        """创建人物模型选择卡片。
+
+        包含模型名称下拉框（取自 model_paths 的键）、
+        当前路径只读展示和浏览按钮，允许为每个模型单独指定路径。
+        """
         card = self._create_card("modelCard")
         layout = self._create_card_layout(card)
         layout.setSpacing(10)
@@ -627,7 +631,19 @@ class SettingsPage(QWidget):
         title.setObjectName("cardTitle")
         layout.addWidget(title)
 
-        path_label = QLabel("Live2D 模型路径", self)
+        # 模型名称下拉框
+        name_row = QHBoxLayout()
+        name_row.setSpacing(10)
+        name_row.addWidget(self._create_field_label("选择模型"))
+        self._model_selector = QComboBox(self)
+        self._model_selector.setObjectName("modelSelector")
+        self._model_selector.setMinimumWidth(0)
+        self._model_selector.setToolTip("从已配置的模型列表中选择当前使用的 Live2D 形象")
+        name_row.addWidget(self._model_selector, stretch=1)
+        layout.addLayout(name_row)
+
+        # 模型路径输入 + 浏览
+        path_label = QLabel("模型文件路径", self)
         path_label.setObjectName("subLabel")
         layout.addWidget(path_label)
 
@@ -952,8 +968,8 @@ class SettingsPage(QWidget):
                 border: 0;
             }
             QFrame#settingsSidebar {
-                background: rgba(255, 255, 255, 248);
-                border: 1px solid #E2E8F0;
+                background: rgba(255, 255, 255, 170);
+                border: 1px solid rgba(226, 232, 240, 170);
                 border-radius: 12px;
             }
             QFrame#settingsNavButton {
@@ -995,8 +1011,8 @@ class SettingsPage(QWidget):
                 color: #1677FF;
             }
             QFrame#sidebarStatusCard {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #F6FAFF, stop:1 #EFF6FF);
-                border: 1px solid #DBEAFE;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(246, 250, 255, 170), stop:1 rgba(239, 246, 255, 170));
+                border: 1px solid rgba(219, 234, 254, 160);
                 border-radius: 10px;
             }
             QLabel#sidebarStatusTitle {
@@ -1026,8 +1042,8 @@ class SettingsPage(QWidget):
             QFrame#modelCard,
             QFrame#llmCard,
             QFrame#promptCard {
-                background: #FFFFFF;
-                border: 1px solid #E5EAF2;
+                background: rgba(255, 255, 255, 185);
+                border: 1px solid rgba(229, 234, 242, 170);
                 border-radius: 12px;
             }
             QFrame#cardIconBadge {
@@ -1108,8 +1124,8 @@ class SettingsPage(QWidget):
             QComboBox#microphoneSelect,
             QComboBox#sampleRateSelect,
             QComboBox#promptModeSelect {
-                background: #FFFFFF;
-                border: 1px solid #DDE3EA;
+                background: rgba(255, 255, 255, 190);
+                border: 1px solid rgba(221, 227, 234, 170);
                 border-radius: 6px;
                 color: #0F172A;
                 font-size: 14px;
@@ -1257,8 +1273,8 @@ class SettingsPage(QWidget):
                 selection-color: #0284C7;
             }
             QFrame#inputGroup {
-                background: #F8FAFC;
-                border: 1px solid #E2E8F0;
+                background: rgba(248, 250, 252, 170);
+                border: 1px solid rgba(226, 232, 240, 170);
                 border-radius: 6px;
             }
             QFrame#inputGroup[invalid="true"] {
@@ -1332,6 +1348,7 @@ class SettingsPage(QWidget):
         self._microphone_index.currentIndexChanged.connect(self._on_setting_changed)
         self._mic_sample_rate.currentTextChanged.connect(self._on_setting_changed)
         self._mic_block_size.valueChanged.connect(self._on_setting_changed)
+        self._model_selector.currentIndexChanged.connect(self._on_model_selected)
         self._model_path_edit.textChanged.connect(self._on_setting_changed)
         self._llm_base_url_edit.textChanged.connect(self._on_setting_changed)
         self._llm_api_key_edit.textChanged.connect(self._on_setting_changed)
@@ -1351,6 +1368,7 @@ class SettingsPage(QWidget):
             self._microphone_index,
             self._mic_sample_rate,
             self._mic_block_size,
+            self._model_selector,
             self._model_path_edit,
             self._llm_base_url_edit,
             self._llm_api_key_edit,
@@ -1367,7 +1385,18 @@ class SettingsPage(QWidget):
         self._set_combo_value(self._camera_fps, f"{self._config.camera_fps} FPS")
         self._set_combo_value(self._mic_sample_rate, f"{self._config.mic_sample_rate} Hz")
         self._mic_block_size.setValue(self._config.mic_block_size)
+
+        # 模型下拉框：从 model_paths 的键生成选项，选中 model_name
+        self._model_selector.clear()
+        model_names = list(self._config.model_paths.keys())
+        for name in model_names:
+            self._model_selector.addItem(name, name)
+        selected_idx = self._model_selector.findData(self._config.model_name)
+        if selected_idx >= 0:
+            self._model_selector.setCurrentIndex(selected_idx)
+        # 同步路径显示
         self._model_path_edit.setText(self._config.model_paths.get(self._config.model_name, ""))
+
         self._llm_base_url_edit.setText(self._config.llm_base_url)
         self._llm_api_key_edit.setText(self._config.llm_api_key)
         self._llm_model_edit.setText(self._config.llm_model)
@@ -1494,7 +1523,7 @@ class SettingsPage(QWidget):
         if self._model_test_running:
             return
 
-        model_path_text = self._model_path_edit.text().strip()
+        model_path_text = self._config.model_paths.get(self._config.model_name, "")
         model_path = resolve_project_path(model_path_text)
         if not model_path_text:
             self._set_device_test_status("model", "error", "连接失败：请先选择人物模型文件")
@@ -1662,17 +1691,8 @@ class SettingsPage(QWidget):
             # 再启动一次真实 Live2D 渲染，等待第一帧完成后立即关闭。
             renderer = Live2DRenderer()
             # 加载参数映射表，确保测试时使用正确的参数 ID
-            from virtual_avatar_system.config.app_config import load_config, load_param_mappings
-            # 从配置中反向查找当前路径对应的模型名，找不到则用父目录名作为 fallback
-            config = load_config()
-            test_model_name = ""
-            for name, path_str in config.model_paths.items():
-                if resolve_project_path(path_str) == model_path:
-                    test_model_name = name
-                    break
-            if not test_model_name:
-                test_model_name = model_path.parent.name
-            test_mappings = load_param_mappings(test_model_name)
+            from virtual_avatar_system.config.app_config import load_param_mappings
+            test_mappings = load_param_mappings(self._config.model_name)
             renderer.start(
                 model_path,
                 window_size=(240, 360),
@@ -1975,6 +1995,17 @@ class SettingsPage(QWidget):
             return
 
         self._model_path_edit.setText(project_relative_path(Path(file_path)))
+
+    def _on_model_selected(self) -> None:
+        """下拉框切换模型时，更新 model_name 并同步路径显示和测试状态。"""
+        new_name = self._model_selector.currentData()
+        if new_name is None or new_name == self._config.model_name:
+            return
+        self._config.model_name = new_name
+        self._model_path_edit.setText(self._config.model_paths.get(new_name, ""))
+        self._update_model_path_state()
+        self._reset_test_results()
+        self._set_config_valid(self._compute_config_validity())
 
     def _on_setting_changed(self, *_args) -> None:
         """控件值变更 -> 写入 AppConfig -> 通知外部。"""

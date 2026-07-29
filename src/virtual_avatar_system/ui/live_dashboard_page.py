@@ -932,13 +932,13 @@ class LiveDashboardPage(QWidget):
         self.setStyleSheet(
             """
             QFrame#dashboardCard {
-                background: #FFFFFF;
-                border: 1px solid #E5EAF2;
+                background: rgba(255, 255, 255, 185);
+                border: 1px solid rgba(229, 234, 242, 170);
                 border-radius: 12px;
             }
             QFrame#dashboardSidebar {
-                background: rgba(255, 255, 255, 248);
-                border: 1px solid #E2E8F0;
+                background: rgba(255, 255, 255, 170);
+                border: 1px solid rgba(226, 232, 240, 170);
                 border-radius: 12px;
             }
             QStackedWidget#dashboardContentStack,
@@ -949,13 +949,13 @@ class LiveDashboardPage(QWidget):
                 border: 0;
             }
             QFrame#adviceCard {
-                background: #FFFFFF;
-                border: 1px solid #E5EAF2;
+                background: rgba(255, 255, 255, 185);
+                border: 1px solid rgba(229, 234, 242, 170);
                 border-radius: 12px;
             }
             QFrame#backendLogCard {
-                background: #FFFFFF;
-                border: 1px solid #E5EAF2;
+                background: rgba(255, 255, 255, 185);
+                border: 1px solid rgba(229, 234, 242, 170);
                 border-radius: 12px;
             }
             QFrame#dashboardTile,
@@ -1071,8 +1071,8 @@ class LiveDashboardPage(QWidget):
                 color: #1677FF;
             }
             QLineEdit#audienceCommentInput {
-                background: #FFFFFF;
-                border: 1px solid #DDE3EA;
+                background: rgba(255, 255, 255, 190);
+                border: 1px solid rgba(221, 227, 234, 170);
                 border-radius: 7px;
                 color: #0F172A;
                 font-size: 13px;
@@ -1083,8 +1083,8 @@ class LiveDashboardPage(QWidget):
                 border: 1px solid #2563EB;
             }
             QLineEdit#bilibiliRoomInput {
-                background: #FFFFFF;
-                border: 1px solid #DDE3EA;
+                background: rgba(255, 255, 255, 190);
+                border: 1px solid rgba(221, 227, 234, 170);
                 border-radius: 7px;
                 color: #0F172A;
                 font-size: 13px;
@@ -1106,8 +1106,8 @@ class LiveDashboardPage(QWidget):
                 background: #0958D9;
             }
             QFrame#bilibiliStatusBar {
-                background: #FFFFFF;
-                border: 1px solid #E2E8F0;
+                background: rgba(255, 255, 255, 190);
+                border: 1px solid rgba(226, 232, 240, 170);
                 border-radius: 9px;
             }
             QLabel#bilibiliLogo {
@@ -1135,8 +1135,8 @@ class LiveDashboardPage(QWidget):
             }
             QFrame#autoCommentTile,
             QFrame#focusTile {
-                background: #FFFFFF;
-                border: 1px solid #E2E8F0;
+                background: rgba(255, 255, 255, 190);
+                border: 1px solid rgba(226, 232, 240, 170);
                 border-radius: 9px;
             }
             QFrame#adviceIconBadge {
@@ -1176,8 +1176,8 @@ class LiveDashboardPage(QWidget):
                 padding: 3px 10px;
             }
             QFrame#recommendedReplyCard {
-                background: #FFFFFF;
-                border: 1px solid #E2E8F0;
+                background: rgba(255, 255, 255, 185);
+                border: 1px solid rgba(226, 232, 240, 170);
                 border-radius: 10px;
             }
             QLabel#recommendedReplyTitle {
