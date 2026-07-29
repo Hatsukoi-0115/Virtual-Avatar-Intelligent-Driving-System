@@ -719,7 +719,7 @@ class MainWindow(QMainWindow):
             if is_config_valid:
                 self._set_action_button("▶  开始直播", self._state_machine.can_start, "start")
             else:
-                self._set_action_button("请先完成测试", False, "start")
+                self._set_action_button("未完成开播前测试", False, "start")
 
         if new == LiveState.ERROR:
             QMessageBox.critical(
@@ -743,7 +743,7 @@ class MainWindow(QMainWindow):
         elif enabled:
             self._action_hint_label.setText("点击开始直播，系统将自动启动所有服务")
         else:
-            self._action_hint_label.setText("请先完成摄像头、麦克风、人物模型和 LLM 连接测试")
+            self._action_hint_label.setText(self._settings_page.startup_blocker_text())
 
     # ---- 按钮事件 ----
 

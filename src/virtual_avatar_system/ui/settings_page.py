@@ -777,6 +777,7 @@ class SettingsPage(QWidget):
             ("course_qa", "课程答疑"),
             ("ecommerce", "电商带货"),
             ("custom", "自定义"),
+            ("no_prompt", "不添加Prompt"),
         ):
             button = QPushButton(text, self)
             button.setObjectName("promptModeButton")
@@ -794,6 +795,34 @@ class SettingsPage(QWidget):
         self._comment_prompt_edit.setMinimumHeight(330)
         self._comment_prompt_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self._comment_prompt_edit, stretch=1)
+
+        prompt_action_row = QHBoxLayout()
+        prompt_action_row.setContentsMargins(0, 0, 0, 0)
+        prompt_action_row.setSpacing(8)
+
+        self._prompt_confirm_status = QLabel("当前 Prompt 未确认", self)
+        self._prompt_confirm_status.setObjectName("promptConfirmStatus")
+        self._prompt_confirm_status.setProperty("state", "idle")
+        prompt_action_row.addWidget(self._prompt_confirm_status, stretch=1)
+
+        self._restore_prompt_button = QPushButton("恢复默认", self)
+        self._restore_prompt_button.setObjectName("promptActionButton")
+        self._restore_prompt_button.setFixedHeight(32)
+        self._restore_prompt_button.clicked.connect(self._on_restore_prompt_default)
+        prompt_action_row.addWidget(self._restore_prompt_button)
+
+        self._save_prompt_button = QPushButton("保存当前模板", self)
+        self._save_prompt_button.setObjectName("promptActionButton")
+        self._save_prompt_button.setFixedHeight(32)
+        self._save_prompt_button.clicked.connect(self._on_save_prompt_template)
+        prompt_action_row.addWidget(self._save_prompt_button)
+
+        self._confirm_prompt_button = QPushButton("确认Prompt", self)
+        self._confirm_prompt_button.setObjectName("promptConfirmButton")
+        self._confirm_prompt_button.setFixedHeight(32)
+        self._confirm_prompt_button.clicked.connect(self._on_confirm_prompt)
+        prompt_action_row.addWidget(self._confirm_prompt_button)
+        layout.addLayout(prompt_action_row)
 
         prompt_hint = QLabel("该 Prompt 仅用于观众评论的话术建议，不影响 ASR 语义分析、表情和动作映射。", self)
         prompt_hint.setObjectName("promptHint")
@@ -1122,9 +1151,9 @@ class SettingsPage(QWidget):
                 border: 1px solid #D6E2F0;
                 border-radius: 16px;
                 color: #475569;
-                font-size: 13px;
+                font-size: 12px;
                 font-weight: 700;
-                padding: 0 14px;
+                padding: 0 10px;
             }
             QPushButton#promptModeButton:hover {
                 background: #EEF6FF;
@@ -1135,6 +1164,53 @@ class SettingsPage(QWidget):
                 background: #1677FF;
                 border: 1px solid #1677FF;
                 color: #FFFFFF;
+            }
+            QLabel#promptConfirmStatus {
+                color: #DC2626;
+                background: #FEF2F2;
+                border: 1px solid #FECACA;
+                border-radius: 16px;
+                font-size: 12px;
+                font-weight: 800;
+                padding: 0 12px;
+                min-height: 30px;
+            }
+            QLabel#promptConfirmStatus[state="ready"] {
+                color: #059669;
+                background: #ECFDF5;
+                border: 1px solid #BBF7D0;
+            }
+            QLabel#promptConfirmStatus[state="saved"] {
+                color: #2563EB;
+                background: #EFF6FF;
+                border: 1px solid #BFDBFE;
+            }
+            QPushButton#promptActionButton {
+                background: #F8FAFC;
+                border: 1px solid #CBD5E1;
+                border-radius: 6px;
+                color: #334155;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 0 12px;
+            }
+            QPushButton#promptActionButton:hover {
+                background: #EEF6FF;
+                border-color: #9CCBFF;
+                color: #0F5FD7;
+            }
+            QPushButton#promptConfirmButton {
+                background: #1677FF;
+                border: 1px solid #1677FF;
+                border-radius: 6px;
+                color: #FFFFFF;
+                font-size: 13px;
+                font-weight: 800;
+                padding: 0 14px;
+            }
+            QPushButton#promptConfirmButton:hover {
+                background: #4096FF;
+                border-color: #4096FF;
             }
             QLineEdit#unitInputEdit {
                 background: transparent;
@@ -1298,11 +1374,13 @@ class SettingsPage(QWidget):
         self._active_prompt_mode = normalize_comment_prompt_mode(self._config.comment_prompt_mode)
         self._set_prompt_mode_button_state(self._active_prompt_mode)
         self._comment_prompt_edit.setPlainText(get_comment_prompt_text(self._config))
+        self._sync_prompt_editor_state()
 
         for widget in widgets:
             widget.blockSignals(False)
 
         self._update_model_path_state()
+        self._refresh_prompt_confirm_state()
 
     def _populate_camera_options(self, selected_index: int) -> None:
         """刷新摄像头下拉项，并保留当前配置索引。"""
@@ -1712,14 +1790,77 @@ class SettingsPage(QWidget):
         self._comment_prompt_edit.blockSignals(True)
         self._comment_prompt_edit.setPlainText(self._get_prompt_text_for_mode(self._active_prompt_mode))
         self._comment_prompt_edit.blockSignals(False)
+        self._sync_prompt_editor_state()
         self._notify_prompt_config_changed()
+        self._refresh_prompt_confirm_state("切换模板后，请确认Prompt")
 
     def _on_prompt_text_changed(self) -> None:
         """保存当前 Prompt 文本，不重置设备连接测试结果。"""
         mode = getattr(self, "_active_prompt_mode", normalize_comment_prompt_mode(self._config.comment_prompt_mode))
+        if mode == "no_prompt":
+            return
         self._store_prompt_text(mode, self._comment_prompt_edit.toPlainText())
         self._config.comment_prompt_mode = mode
         self._notify_prompt_config_changed()
+        self._refresh_prompt_confirm_state("当前 Prompt 已修改，请重新确认")
+
+    def _on_restore_prompt_default(self) -> None:
+        """恢复当前页签的默认 Prompt，并要求重新确认。"""
+        mode = getattr(self, "_active_prompt_mode", normalize_comment_prompt_mode(self._config.comment_prompt_mode))
+        if mode == "ecommerce":
+            default_text = DEFAULT_ECOMMERCE_PROMPT
+        elif mode == "custom":
+            default_text = ""
+        elif mode == "no_prompt":
+            default_text = self._get_prompt_text_for_mode(mode)
+        else:
+            default_text = DEFAULT_COURSE_QA_PROMPT
+
+        self._comment_prompt_edit.blockSignals(True)
+        self._comment_prompt_edit.setPlainText(default_text)
+        self._comment_prompt_edit.blockSignals(False)
+        self._store_prompt_text(mode, default_text)
+        self._notify_prompt_config_changed()
+        self._refresh_prompt_confirm_state("已恢复默认，请确认Prompt")
+
+    def _on_save_prompt_template(self) -> None:
+        """保存当前模板文本，但不代表开播时已确认使用。"""
+        mode = getattr(self, "_active_prompt_mode", normalize_comment_prompt_mode(self._config.comment_prompt_mode))
+        if mode == "no_prompt":
+            self._config.comment_prompt_mode = mode
+            self._notify_prompt_config_changed()
+            self._refresh_prompt_confirm_state("不添加Prompt模式无需保存，请确认Prompt")
+            return
+        self._store_prompt_text(mode, self._comment_prompt_edit.toPlainText())
+        self._config.comment_prompt_mode = mode
+        self._notify_prompt_config_changed()
+        self._refresh_prompt_confirm_state("模板已保存，请确认Prompt")
+
+    def _on_confirm_prompt(self) -> None:
+        """确认开播时使用当前页签和当前文本。"""
+        mode = getattr(self, "_active_prompt_mode", normalize_comment_prompt_mode(self._config.comment_prompt_mode))
+        prompt_text = self._comment_prompt_edit.toPlainText().strip()
+        self._store_prompt_text(mode, prompt_text)
+        self._config.comment_prompt_mode = mode
+        if mode == "no_prompt":
+            self._config.comment_prompt_confirmed_mode = mode
+            self._config.comment_prompt_confirmed_text = ""
+            self._notify_prompt_config_changed()
+            self._refresh_prompt_confirm_state()
+            self._set_config_valid(self._compute_config_validity())
+            return
+        if not prompt_text:
+            self._config.comment_prompt_confirmed_mode = ""
+            self._config.comment_prompt_confirmed_text = ""
+            self._notify_prompt_config_changed()
+            self._refresh_prompt_confirm_state("Prompt 为空，无法确认")
+            return
+
+        self._config.comment_prompt_confirmed_mode = mode
+        self._config.comment_prompt_confirmed_text = prompt_text
+        self._notify_prompt_config_changed()
+        self._refresh_prompt_confirm_state()
+        self._set_config_valid(self._compute_config_validity())
 
     def _set_prompt_mode_button_state(self, mode: str) -> None:
         """同步 Prompt 三段按钮选中态。"""
@@ -1731,6 +1872,8 @@ class SettingsPage(QWidget):
     def _get_prompt_text_for_mode(self, mode: str) -> str:
         """读取指定模式的完整 Prompt 文本。"""
         normalized_mode = normalize_comment_prompt_mode(mode)
+        if normalized_mode == "no_prompt":
+            return "当前选择不添加额外 Prompt。\n\n确认后，系统仍会分析观众评论并生成推荐回复，但不会使用课程答疑、电商带货或自定义提示词约束。"
         if normalized_mode == "ecommerce":
             return self._config.comment_ecommerce_prompt or DEFAULT_ECOMMERCE_PROMPT
         if normalized_mode == "custom":
@@ -1741,6 +1884,8 @@ class SettingsPage(QWidget):
         """把当前编辑框内容保存到对应 Prompt 模板字段。"""
         normalized_mode = normalize_comment_prompt_mode(mode)
         cleaned = text.strip()
+        if normalized_mode == "no_prompt":
+            return
         if normalized_mode == "ecommerce":
             self._config.comment_ecommerce_prompt = cleaned
             return
@@ -1756,6 +1901,48 @@ class SettingsPage(QWidget):
                 callback(self._config)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.error("Prompt 配置变更回调异常：%s", exc)
+
+    def _is_prompt_confirmed(self) -> bool:
+        """判断当前页签和当前文本是否已经被用户确认用于开播。"""
+        mode = getattr(self, "_active_prompt_mode", normalize_comment_prompt_mode(self._config.comment_prompt_mode))
+        if mode == "no_prompt":
+            return normalize_comment_prompt_mode(self._config.comment_prompt_confirmed_mode) == "no_prompt"
+        prompt_text = self._comment_prompt_edit.toPlainText().strip()
+        return (
+            bool(prompt_text)
+            and normalize_comment_prompt_mode(self._config.comment_prompt_confirmed_mode) == mode
+            and self._config.comment_prompt_confirmed_text.strip() == prompt_text
+        )
+
+    def _prompt_mode_display_name(self, mode: str) -> str:
+        """把 Prompt 模式转换成界面展示名称。"""
+        return {
+            "course_qa": "课程答疑",
+            "ecommerce": "电商带货",
+            "custom": "自定义",
+            "no_prompt": "不添加Prompt",
+        }.get(normalize_comment_prompt_mode(mode), "课程答疑")
+
+    def _sync_prompt_editor_state(self) -> None:
+        """根据当前 Prompt 模式同步编辑框和模板按钮状态。"""
+        is_no_prompt = getattr(self, "_active_prompt_mode", normalize_comment_prompt_mode(self._config.comment_prompt_mode)) == "no_prompt"
+        self._comment_prompt_edit.setReadOnly(is_no_prompt)
+        self._restore_prompt_button.setEnabled(not is_no_prompt)
+        self._save_prompt_button.setEnabled(not is_no_prompt)
+        self._comment_prompt_edit.setToolTip("不添加Prompt模式下无需编辑提示词。" if is_no_prompt else "")
+
+    def _refresh_prompt_confirm_state(self, message: str | None = None) -> None:
+        """刷新 Prompt 确认状态，并同步开播前有效性。"""
+        if self._is_prompt_confirmed():
+            mode_name = self._prompt_mode_display_name(self._config.comment_prompt_confirmed_mode)
+            self._prompt_confirm_status.setText(f"● 已确认使用：{mode_name}")
+            self._prompt_confirm_status.setProperty("state", "ready")
+        else:
+            self._prompt_confirm_status.setText(f"● {message or '当前 Prompt 未确认'}")
+            self._prompt_confirm_status.setProperty("state", "saved" if message and "保存" in message else "idle")
+        self._prompt_confirm_status.style().unpolish(self._prompt_confirm_status)
+        self._prompt_confirm_status.style().polish(self._prompt_confirm_status)
+        self._set_config_valid(self._compute_config_validity())
 
     def _browse_model_file(self) -> None:
         """打开文件选择器并写入 Live2D 模型路径。"""
@@ -1816,7 +2003,16 @@ class SettingsPage(QWidget):
     def _compute_config_validity(self) -> bool:
         """校验关键启动参数。"""
         model_path_valid = self._update_model_path_state()
-        return model_path_valid and all(result == "success" for result in self._test_results.values())
+        return model_path_valid and self._is_prompt_confirmed() and all(result == "success" for result in self._test_results.values())
+
+    def startup_blocker_text(self) -> str:
+        """返回阻止开播的主要原因，供主窗口按钮提示使用。"""
+        pending_text = self._build_pending_test_text()
+        if pending_text == "Prompt未确认":
+            return "请先确认Prompt"
+        if pending_text == "请完成连接测试":
+            return "请先完成摄像头、麦克风、人物模型和 LLM 连接测试"
+        return pending_text
 
     def _update_model_path_state(self) -> bool:
         """刷新模型路径输入框的错误状态。"""
@@ -1862,8 +2058,11 @@ class SettingsPage(QWidget):
             "model": "人物模型",
             "llm": "LLM",
         }
+        parts: list[str] = []
         for result_type, suffix in (("error", "连接异常"), ("testing", "检测中"), ("idle", "未测试")):
             names = [device_names[key] for key, result in self._test_results.items() if result == result_type]
             if names:
-                return f"{'、'.join(names)}{suffix}"
-        return "请完成连接测试"
+                parts.append(f"{'、'.join(names)}{suffix}")
+        if not self._is_prompt_confirmed():
+            parts.append("Prompt未确认")
+        return "；".join(parts) if parts else "请完成连接测试"
