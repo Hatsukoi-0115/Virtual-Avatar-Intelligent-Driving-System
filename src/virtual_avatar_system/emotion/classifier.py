@@ -12,9 +12,10 @@ from typing import Any, Final
 import torch
 
 from virtual_avatar_system.emotion.types import EmotionResult
+from virtual_avatar_system.utils.paths import get_runtime_root
 
 LOGGER = logging.getLogger(__name__)
-PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
+PROJECT_ROOT: Final[Path] = get_runtime_root()
 DEFAULT_MODEL_PATH: Final[Path] = PROJECT_ROOT / "models" / "hf_cache" / "Johnson8187__Chinese-Emotion-Small"
 
 LABEL_MAPPING: Final[dict[int, str]] = {

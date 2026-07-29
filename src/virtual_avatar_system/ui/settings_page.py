@@ -47,9 +47,10 @@ from virtual_avatar_system.config.app_config import (
     resolve_project_path,
 )
 from virtual_avatar_system.vision.camera_source import list_available_camera_indices
+from virtual_avatar_system.utils.paths import get_ui_assets_dir
 
 LOGGER = logging.getLogger(__name__)
-ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+ASSETS_DIR = get_ui_assets_dir()
 CONTROL_HEIGHT = 40
 LABEL_WIDTH = 70
 SETTINGS_CONTENT_MAX_WIDTH = 580
@@ -959,7 +960,7 @@ class SettingsPage(QWidget):
 
     def _apply_styles(self) -> None:
         """集中设置设置页视觉样式。"""
-        chevron_path = (Path(__file__).resolve().parent / "assets" / "chevron-down.svg").as_posix()
+        chevron_path = (ASSETS_DIR / "chevron-down.svg").as_posix()
         style_sheet = (
             """
             QStackedWidget#settingsContentStack,

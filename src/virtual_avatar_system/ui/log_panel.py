@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtCore import QSize
 from PySide6.QtGui import QColor, QIcon, QTextCharFormat, QTextCursor
@@ -22,7 +20,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+from virtual_avatar_system.utils.paths import get_ui_assets_dir
+
+ASSETS_DIR = get_ui_assets_dir()
 
 
 class LogSignal(QObject):

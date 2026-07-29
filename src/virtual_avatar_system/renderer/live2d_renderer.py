@@ -33,6 +33,8 @@ MIN_WINDOW_SIZE: tuple[int, int] = (240, 360)
 MAX_WINDOW_SIZE: tuple[int, int] = (960, 1080)
 # 逐像素 alpha 透明：清屏时 alpha=0 表示完全透明，DWM 负责与桌面合成
 TRANSPARENT_CLEAR_RGBA: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+PARAM_POSE_GROUP = "ParamPose"
+MOTION_MIN_DURATION_SECONDS = 2.0
 
 user32 = ctypes.windll.user32
 GWL_EXSTYLE = -20
@@ -250,12 +252,80 @@ def _apply_avatar_output(
     # 只有在没有动作播放时，才播放新动作
     current_motion = (output.motion_group, output.motion_index)
     if output.motion_group and current_motion != last_motion and not motion_playing:
-        model.StartMotion(output.motion_group, output.motion_index, live2d.MotionPriority.FORCE)
+        if output.motion_group == PARAM_POSE_GROUP:
+            # Saki 这类只有 moc3/贴图、没有 motion3 文件的模型，使用参数曲线模拟语义动作。
+            LOGGER.info("播放参数动作：%s[%d]", output.motion_group, output.motion_index)
+        else:
+            model.StartMotion(output.motion_group, output.motion_index, live2d.MotionPriority.FORCE)
         last_motion = current_motion
         motion_playing = True
         LOGGER.info("播放动作：%s[%d]", output.motion_group, output.motion_index)
 
     return last_expression, last_motion, motion_playing
+
+
+def _apply_param_pose_motion(
+    model: live2d.LAppModel,
+    motion_index: int,
+    elapsed_seconds: float,
+    param_map: dict[str, str] | None = None,
+) -> None:
+    """为缺少 motion3 资源的模型生成可见的参数动作。
+
+    Saki 当前资源包没有预设动作文件，因此语义动作不能调用 StartMotion。
+    这里用头部、身体、眼睛和嘴部参数叠加短时曲线，保证直播演示时能看到动作反馈。
+    """
+    pm = param_map or {}
+    phase = max(0.0, min(1.0, elapsed_seconds / MOTION_MIN_DURATION_SECONDS))
+    wave = math.sin(phase * math.pi)
+    fast_wave = math.sin(phase * math.pi * 4.0)
+
+    angle_x = 0.0
+    angle_y = 0.0
+    angle_z = 0.0
+    body_x = 0.0
+    body_y = 0.0
+    body_z = 0.0
+    mouth_open = 0.0
+    eye_open = 1.0
+
+    if motion_index == 0:
+        # 待机/回应：轻微点头，适合无明确语义时使用。
+        angle_y = -12.0 * wave
+        body_y = -5.0 * wave
+    elif motion_index == 1:
+        # 认可/点头：连续两次点头，反馈更清楚。
+        angle_y = -14.0 * abs(fast_wave)
+        body_y = -6.0 * abs(fast_wave)
+    elif motion_index == 2:
+        # 否定/疑问：左右摇头，并带一点身体转向。
+        angle_x = 18.0 * fast_wave
+        body_x = 8.0 * fast_wave
+    elif motion_index == 3:
+        # 思考/讲解：轻微侧头并张口，模拟正在说明。
+        angle_z = 10.0 * wave
+        angle_x = -8.0 * wave
+        mouth_open = 0.35 * wave
+    elif motion_index == 4:
+        # 开心/欢迎：抬头、眨眼、张口，形成更活泼的反馈。
+        angle_y = 8.0 * wave
+        angle_z = -8.0 * wave
+        body_z = -6.0 * wave
+        mouth_open = 0.55 * wave
+        eye_open = max(0.25, 1.0 - 0.65 * wave)
+    else:
+        # 兜底动作：小幅左右摆动，避免未知索引完全无反馈。
+        angle_x = 10.0 * fast_wave
+
+    model.AddParameterValue(pm.get("PARAM_ANGLE_X", "PARAM_ANGLE_X"), angle_x)
+    model.AddParameterValue(pm.get("PARAM_ANGLE_Y", "PARAM_ANGLE_Y"), angle_y)
+    model.AddParameterValue(pm.get("PARAM_ANGLE_Z", "PARAM_ANGLE_Z"), angle_z)
+    model.AddParameterValue(pm.get("PARAM_BODY_ANGLE_X", "PARAM_BODY_ANGLE_X"), body_x)
+    model.AddParameterValue(pm.get("PARAM_BODY_ANGLE_Y", "PARAM_BODY_ANGLE_Y"), body_y)
+    model.AddParameterValue(pm.get("PARAM_BODY_ANGLE_Z", "PARAM_BODY_ANGLE_Z"), body_z)
+    model.AddParameterValue(pm.get("PARAM_MOUTH_OPEN_Y", "PARAM_MOUTH_OPEN_Y"), mouth_open)
+    model.SetParameterValue(pm.get("PARAM_EYE_L_OPEN", "PARAM_EYE_L_OPEN"), eye_open)
+    model.SetParameterValue(pm.get("PARAM_EYE_R_OPEN", "PARAM_EYE_R_OPEN"), eye_open)
 
 
 def _render_worker(
@@ -322,7 +392,6 @@ def _render_worker(
     last_motion: tuple[str, int] = ("", 0)
     motion_playing = False
     motion_start_time = 0.0
-    MOTION_MIN_DURATION = 2.0
     first_frame_rendered = False
     # 方案3：呼吸待机动画
     breath_phase = 0.0
@@ -358,17 +427,23 @@ def _render_worker(
 
             # 检测动作是否播放完成（基于时间）
             current_time = pygame.time.get_ticks() / 1000.0
-            if motion_playing and (current_time - motion_start_time) >= MOTION_MIN_DURATION:
+            if motion_playing and (current_time - motion_start_time) >= MOTION_MIN_DURATION_SECONDS:
                 motion_playing = False
                 LOGGER.debug("动作播放完成")
 
+            previous_motion = last_motion
+            was_motion_playing = motion_playing
             last_expression, last_motion, motion_playing = _apply_avatar_output(
                 model, latest_output, last_expression, last_motion, motion_playing, param_mappings
             )
             
             # 如果播放了新动作，记录开始时间
-            if last_motion != ("", 0) and not motion_playing:
+            if motion_playing and (not was_motion_playing or last_motion != previous_motion):
                 motion_start_time = current_time
+
+            if motion_playing and last_motion[0] == PARAM_POSE_GROUP:
+                # 参数动作叠加在视觉驱动之后，使无 motion3 的模型也能展示语义动作。
+                _apply_param_pose_motion(model, last_motion[1], current_time - motion_start_time, param_mappings)
 
             # 方案3：呼吸待机动画，始终运行
             breath_phase += BREATH_SPEED

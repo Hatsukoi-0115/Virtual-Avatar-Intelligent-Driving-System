@@ -27,8 +27,9 @@ from PySide6.QtWidgets import (
 )
 
 from virtual_avatar_system.reporting.live_report_generator import LiveReportSummary
+from virtual_avatar_system.utils.paths import get_ui_assets_dir
 
-ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+ASSETS_DIR = get_ui_assets_dir()
 
 
 class LiveReportSummaryPage(QWidget):

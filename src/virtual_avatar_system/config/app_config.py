@@ -13,13 +13,16 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Final
 
+from virtual_avatar_system.utils.paths import get_runtime_root
+
 LOGGER = logging.getLogger(__name__)
-PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
+PROJECT_ROOT: Final[Path] = get_runtime_root()
 CONFIG_DIR: Final[Path] = PROJECT_ROOT / "configs"
 CONFIG_FILE: Final[Path] = CONFIG_DIR / "app_config.json"
 ENV_FILE: Final[Path] = PROJECT_ROOT / ".env"
 PARAM_MAPPINGS_PATH: Final[Path] = CONFIG_DIR / "param_mappings.json"
 DEFAULT_MODEL_PATH: Final[str] = "models/haru_ja/runtime/haru.model3.json"
+DEFAULT_SAKI_MODEL_PATH: Final[str] = "models/Saki/1785121542686.model3.json"
 DEFAULT_EMOTION_MODEL_PATH: Final[str] = "models/hf_cache/Johnson8187__Chinese-Emotion-Small"
 DEFAULT_COURSE_QA_PROMPT: Final[str] = """直播内容：
 本场直播是“虚拟形象智能驱动系统”课程答疑与验收演示。
@@ -96,8 +99,13 @@ class AppConfig:
     emotion_model_path: str = DEFAULT_EMOTION_MODEL_PATH
 
     # ---- Live2D 模型配置 ----
-    model_name: str = "haru_ja"
-    model_paths: dict[str, str] = field(default_factory=lambda: {"haru_ja": DEFAULT_MODEL_PATH})
+    model_name: str = "Saki"
+    model_paths: dict[str, str] = field(
+        default_factory=lambda: {
+            "haru_ja": DEFAULT_MODEL_PATH,
+            "Saki": DEFAULT_SAKI_MODEL_PATH,
+        }
+    )
 
     # ---- LLM 配置 ----
     llm_base_url: str = ""

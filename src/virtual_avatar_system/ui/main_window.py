@@ -37,10 +37,11 @@ from virtual_avatar_system.ui.live_report_summary_page import LiveReportSummaryP
 from virtual_avatar_system.ui.live_state_machine import LiveState, LiveStateMachine
 from virtual_avatar_system.ui.settings_page import SettingsPage
 from virtual_avatar_system.ui.system_tray import AppSystemTray
+from virtual_avatar_system.utils.paths import get_ui_asset_path, get_ui_assets_dir
 
 LOGGER = logging.getLogger(__name__)
-ASSETS_DIR = Path(__file__).resolve().parent / "assets"
-BG_IMAGE_PATH = ASSETS_DIR / "BG.jpg"
+ASSETS_DIR = get_ui_assets_dir()
+BG_IMAGE_PATH = get_ui_asset_path("BG.jpg")
 # 背景图透明度（0.0=完全透明, 1.0=完全不透明），配合半透明部件可见背景内容
 BG_OPACITY: float = 0.30
 CONFIG_WINDOW_SIZE: tuple[int, int] = (820, 700)
@@ -212,6 +213,18 @@ class MainWindow(QMainWindow):
         """停止直播后展示本次直播报告摘要。"""
         self._showing_report_summary = True
         self._report_summary_page.set_summary(summary)
+        self._render_live_report_summary()
+
+    def complete_stop_with_report(self, summary: LiveReportSummary) -> None:
+        """完成停播状态切换，并优先展示本轮直播报告摘要。"""
+        self._showing_report_summary = True
+        self._report_summary_page.set_summary(summary)
+        # 先声明当前要停留在报告页，再让状态机回到 IDLE，避免 IDLE 刷新把界面切回配置页。
+        self._state_machine.on_stopped()
+        self._render_live_report_summary()
+
+    def _render_live_report_summary(self) -> None:
+        """把当前报告摘要页渲染到主界面。"""
         self._apply_config_window_size()
         self._show_report_header()
         self._content_stack.setCurrentWidget(self._report_summary_page)
@@ -240,6 +253,10 @@ class MainWindow(QMainWindow):
     def _setup_window(self) -> None:
         """设置主窗口属性。"""
         self.setWindowTitle("虚拟形象智能驱动系统")
+        icon_path = get_ui_asset_path("app_icon.ico")
+        if icon_path.exists():
+            # 主窗口图标与 exe 图标保持一致，避免任务栏显示默认 Qt 图标。
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.resize(*CONFIG_WINDOW_SIZE)
         self.setMinimumSize(*CONFIG_MIN_SIZE)
         self.setMaximumWidth(CONFIG_MAX_WIDTH)
