@@ -108,6 +108,8 @@ class AppConfig:
     comment_course_prompt: str = DEFAULT_COURSE_QA_PROMPT
     comment_ecommerce_prompt: str = DEFAULT_ECOMMERCE_PROMPT
     comment_custom_prompt: str = ""
+    comment_prompt_confirmed_mode: str = ""
+    comment_prompt_confirmed_text: str = ""
     # 兼容旧版拆分字段，后续读取旧配置时仍可正常加载。
     comment_live_content: str = "虚拟形象智能驱动系统直播演示，重点展示摄像头、麦克风、FunASR、情绪理解、LLM 语义理解、Live2D 动作联动、B站评论接入和直播报告。"
     comment_host_persona: str = "课程项目演示主播，表达清晰、客观专业，面向老师和同学讲解系统能力。"
@@ -189,6 +191,8 @@ def save_llm_env(config: AppConfig) -> None:
 
 def normalize_comment_prompt_mode(mode: str) -> str:
     """把旧版 Prompt 模式兼容映射到当前三段切换模式。"""
+    if mode in {"no_prompt", "none", "disabled"}:
+        return "no_prompt"
     if mode in {"custom"}:
         return "custom"
     if mode in {"ecommerce", "ecommerce_sales"}:
@@ -199,6 +203,8 @@ def normalize_comment_prompt_mode(mode: str) -> str:
 def get_comment_prompt_text(config: AppConfig) -> str:
     """根据当前 Prompt 模式读取完整提示词。"""
     mode = normalize_comment_prompt_mode(config.comment_prompt_mode)
+    if mode == "no_prompt":
+        return ""
     if mode == "ecommerce":
         return config.comment_ecommerce_prompt.strip() or DEFAULT_ECOMMERCE_PROMPT
     if mode == "custom":

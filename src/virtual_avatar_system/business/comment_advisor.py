@@ -120,7 +120,9 @@ def _build_comment_system_prompt(config: CommentLLMConfig) -> str:
     """构建观众评论话术建议的稳定输出提示词。"""
     prompt_text = config.prompt_text.strip()
     custom_prompt = config.custom_prompt.strip()
-    if prompt_text:
+    if config.prompt_mode == "no_prompt":
+        scenario_prompt = "- 用户选择不添加额外 Prompt。请只根据观众评论本身生成通用、简洁、稳妥的话术建议。"
+    elif prompt_text:
         # UI 中维护的是完整 Prompt，这里只追加输出格式约束，避免模型返回不可解析内容。
         scenario_prompt = prompt_text
     elif config.prompt_mode == "custom" and custom_prompt:
@@ -166,6 +168,8 @@ def _build_default_scenario_prompt(config: CommentLLMConfig) -> str:
 
 def _build_business_context(config: CommentLLMConfig) -> str:
     """给 HumanMessage 提供简短业务上下文，帮助模型聚焦当前直播。"""
+    if config.prompt_mode == "no_prompt":
+        return "未添加额外 Prompt"
     live_content = config.live_content.strip() or "虚拟形象智能驱动系统直播演示"
     host_persona = config.host_persona.strip() or "课程项目演示主播"
     return f"{live_content}；主播人设：{host_persona}"
