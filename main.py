@@ -15,8 +15,9 @@ import random
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
@@ -83,8 +84,11 @@ class StartupSplash(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self._progress_value = 8
-        self._progress_target = 18
+        # 进度条使用千分制，避免百分制每次推进一大格造成“跳段”观感。
+        self._progress_value = 80
+        self._progress_target = 180
+        self._progress_ceiling = 240
+        self._slow_progress_ticks = 0
         self.setWindowTitle("虚拟形象智能驱动系统")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -97,11 +101,24 @@ class StartupSplash(QWidget):
         self._setup_progress_timer()
         self._center_on_screen()
 
-    def update_stage(self, text: str, progress: int | None = None) -> None:
+    def update_stage(
+        self,
+        text: str,
+        progress: int | None = None,
+        ceiling: int | None = None,
+    ) -> None:
         """更新启动阶段提示并立即刷新界面。"""
         self._stage_label.setText(text)
         if progress is not None:
-            self._progress_target = max(self._progress_target, min(progress, 98))
+            target = min(progress, 98) * 10
+            ceiling_value = min(ceiling if ceiling is not None else progress + 8, 98) * 10
+            self._progress_target = max(self._progress_value, target)
+            # 当前阶段设置一个缓冲上限，耗时导入期间进度条会慢慢推进但不会提前跑满。
+            self._progress_ceiling = max(
+                self._progress_target,
+                ceiling_value,
+            )
+            self._slow_progress_ticks = 0
         self._advance_progress()
         _flush_ui_events()
 
@@ -160,7 +177,7 @@ class StartupSplash(QWidget):
 
         self._progress_bar = QProgressBar(self)
         self._progress_bar.setObjectName("startupProgress")
-        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setRange(0, 1000)
         self._progress_bar.setValue(self._progress_value)
         self._progress_bar.setTextVisible(False)
         self._progress_bar.setFixedHeight(6)
@@ -233,29 +250,39 @@ class StartupSplash(QWidget):
     def _setup_progress_timer(self) -> None:
         """创建启动进度动画定时器，让进度条在耗时阶段也持续移动。"""
         self._progress_timer = QTimer(self)
-        self._progress_timer.setInterval(90)
+        self._progress_timer.setInterval(45)
         self._progress_timer.timeout.connect(self._advance_progress)
         self._progress_timer.start()
 
     def _advance_progress(self) -> None:
         """把进度值平滑推进到当前阶段目标值。"""
-        if self._progress_value >= self._progress_target:
-            # 阶段耗时较长时微量推进，避免用户误以为启动卡住。
-            if self._progress_value < 96:
-                self._progress_value += 1
-            else:
-                return
-        else:
-            step = 2 if self._progress_target - self._progress_value > 8 else 1
+        if self._progress_value < self._progress_target:
+            diff = self._progress_target - self._progress_value
+            # 逐帧细推到阶段目标，避免直接跳到下一段。
+            step = 4 if diff > 80 else 2
             self._progress_value = min(self._progress_value + step, self._progress_target)
+        elif self._progress_value < self._progress_ceiling:
+            # 重资源加载时主阶段不变，但以较慢节奏继续补间，避免视觉上停住。
+            self._slow_progress_ticks += 1
+            if self._slow_progress_ticks < 2:
+                return
+            self._slow_progress_ticks = 0
+            self._progress_value += 2
+        else:
+            return
         self._progress_bar.setValue(self._progress_value)
 
     def finish_progress(self) -> None:
         """启动完成前补满进度条。"""
-        self._progress_target = 100
-        self._progress_value = 100
-        self._progress_bar.setValue(100)
+        self._progress_target = 1000
+        self._progress_value = 1000
+        self._progress_bar.setValue(1000)
         self._progress_timer.stop()
+        _flush_ui_events()
+
+    def pulse_progress(self) -> None:
+        """手动推进一次进度动画，用于后台任务等待期间。"""
+        self._advance_progress()
         _flush_ui_events()
 
     def _center_on_screen(self) -> None:
@@ -267,6 +294,32 @@ class StartupSplash(QWidget):
         x = screen_geometry.center().x() - self.width() // 2
         y = screen_geometry.center().y() - self.height() // 2
         self.move(x, y)
+
+
+def _run_startup_task(
+    startup_splash: StartupSplash,
+    text: str,
+    progress: int,
+    ceiling: int,
+    task: Callable[[], Any],
+) -> Any:
+    """在后台执行启动阶段任务，主线程持续刷新启动进度。"""
+    startup_splash.update_stage(text, progress, ceiling)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(task)
+        while not future.done():
+            # 导入 FunASR、音频等重模块时保持启动页流动，降低卡顿感。
+            startup_splash.pulse_progress()
+            time.sleep(0.045)
+        return future.result()
+
+
+def _hold_startup_stage(startup_splash: StartupSplash, seconds: float = 0.18) -> None:
+    """短暂保留启动阶段提示，避免快速阶段在人眼中一闪而过。"""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        startup_splash.pulse_progress()
+        time.sleep(0.045)
 
 
 def main() -> None:
@@ -284,18 +337,29 @@ def main() -> None:
     startup_splash.update_stage("正在启动虚拟形象智能驱动系统...", 12)
 
     # ---- 延迟导入项目模块，让 exe 启动时尽早显示启动小窗口 ----
-    startup_splash.update_stage("正在检查运行环境...", 22)
+    startup_splash.update_stage("正在检查运行环境...", 22, 30)
     from virtual_avatar_system.utils.runtime_dependencies import ensure_ffmpeg_on_path
 
     ensure_ffmpeg_on_path()
 
-    startup_splash.update_stage("正在加载语音识别模块...", 32)
-    from virtual_avatar_system.audio.live_speech_service import (
-        LiveSpeechServiceConfig,
-        LiveSpeechUnderstandingService,
+    def _load_speech_modules() -> tuple[type, type]:
+        """加载语音识别服务模块，放入后台线程避免启动页静止。"""
+        from virtual_avatar_system.audio.live_speech_service import (
+            LiveSpeechServiceConfig,
+            LiveSpeechUnderstandingService,
+        )
+
+        return LiveSpeechServiceConfig, LiveSpeechUnderstandingService
+
+    LiveSpeechServiceConfig, LiveSpeechUnderstandingService = _run_startup_task(
+        startup_splash,
+        "正在加载语音识别模块...",
+        32,
+        80,
+        _load_speech_modules,
     )
 
-    startup_splash.update_stage("正在加载配置系统...", 42)
+    startup_splash.update_stage("正在加载配置系统...", 81, 82)
     from virtual_avatar_system.config.app_config import (
         get_model_path,
         load_config,
@@ -304,16 +368,16 @@ def main() -> None:
         save_config,
     )
 
-    startup_splash.update_stage("正在加载虚拟形象控制器...", 48)
+    startup_splash.update_stage("正在加载虚拟形象控制器...", 83, 84)
     from virtual_avatar_system.controller.avatar_controller import AvatarController, AvatarInputState
 
-    startup_splash.update_stage("正在加载 LLM 语义模块...", 52)
+    startup_splash.update_stage("正在加载 LLM 语义模块...", 85, 86)
     from virtual_avatar_system.llm.semantic import get_idle_labels
 
-    startup_splash.update_stage("正在加载 Live2D 渲染模块...", 56)
+    startup_splash.update_stage("正在加载 Live2D 渲染模块...", 87, 88)
     from virtual_avatar_system.renderer.live2d_renderer import Live2DRenderer
 
-    startup_splash.update_stage("正在加载直播报告模块...", 58)
+    startup_splash.update_stage("正在加载直播报告模块...", 89, 90)
     from virtual_avatar_system.reporting.live_event_recorder import LiveEventRecorder
     from virtual_avatar_system.reporting.live_report_generator import (
         build_live_report_summary,
@@ -321,35 +385,36 @@ def main() -> None:
         save_live_report,
     )
 
-    startup_splash.update_stage("正在加载主窗口界面...", 60)
+    startup_splash.update_stage("正在加载主窗口界面...", 91, 93)
     from virtual_avatar_system.ui.main_window import MainWindow
     from virtual_avatar_system.ui.system_tray import AppSystemTray
 
-    startup_splash.update_stage("正在加载摄像头与人脸检测模块...", 64)
+    startup_splash.update_stage("正在加载摄像头与人脸检测模块...", 94, 95)
     from virtual_avatar_system.vision.camera_source import CameraFrameSource
     from virtual_avatar_system.vision.face_inference import FaceLandmarkInferencer
 
     # ---- 加载配置 ----
-    startup_splash.update_stage("正在读取本地配置...", 68)
+    startup_splash.update_stage("正在读取本地配置...", 95, 95)
     config = load_config()
     speech_service: LiveSpeechUnderstandingService | None = None
 
     # ---- 创建窗口 ----
-    startup_splash.update_stage("正在初始化主窗口...", 72)
+    startup_splash.update_stage("正在初始化主窗口...", 96, 96)
     main_window = MainWindow(config)
-    startup_splash.update_stage("正在接入后端日志...", 78)
+    startup_splash.update_stage("正在接入后端日志...", 97, 97)
     ui_log_handler = _attach_ui_log_handler(main_window)
     logger.info("后端输出日志面板已连接")
 
     # ---- 系统托盘 ----
-    startup_splash.update_stage("正在初始化系统托盘...", 84)
+    startup_splash.update_stage("正在初始化系统托盘...", 97, 98)
     tray = AppSystemTray(main_window)
     tray.show()
 
     main_window.set_system_tray(tray)
 
     # ---- 融合层与渲染层 ----
-    startup_splash.update_stage("正在准备运行控制器...", 90)
+    startup_splash.update_stage("正在准备运行控制器...", 97, 98)
+    _hold_startup_stage(startup_splash, 0.2)
     avatar_controller = AvatarController(model_name=config.model_name)
     live2d_renderer = Live2DRenderer()
     event_recorder = LiveEventRecorder()
@@ -583,8 +648,6 @@ def main() -> None:
             consume_timer.start()
             main_window.update_startup_stage("视觉链路已就绪")
             _flush_ui_events()
-
-            main_window.state_machine.on_ready()
         except Exception as exc:  # noqa: BLE001
             logger.exception("启动视觉/渲染链路失败")
             _shutdown_runtime()
@@ -605,14 +668,32 @@ def main() -> None:
             main_window.update_startup_stage("启动麦克风监听")
             _flush_ui_events()
             speech_service.start()
+            main_window.update_startup_stage("正在加载语音识别和情绪模型...")
+            _flush_ui_events()
+            speech_ready = speech_service.wait_until_ready(
+                timeout=60.0,
+                progress_callback=lambda: (
+                    main_window.pulse_loading_animation(),
+                    _flush_ui_events(),
+                ),
+            )
+            if not speech_ready:
+                error_message = speech_service.startup_error or "语音识别模型加载失败"
+                raise RuntimeError(error_message)
             main_window.update_microphone_connection_status("已连接")
             main_window.update_microphone_listening_status("正在监听")
             main_window.update_startup_stage("直播运行中")
+            _flush_ui_events()
+            # 所有开播必要链路均已就绪后，再切换到直播运行页。
+            main_window.state_machine.on_ready()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("语音/情绪/LLM 链路启动失败，仅保留视觉驱动：%s", exc)
+            logger.warning("语音/情绪/LLM 链路启动失败：%s", exc)
             main_window.update_microphone_connection_status("连接失败")
             main_window.update_microphone_listening_status("未监听")
-            main_window.update_startup_stage("语音链路启动失败，视觉链路运行中")
+            main_window.update_startup_stage("语音链路启动失败")
+            _shutdown_speech()
+            _shutdown_runtime()
+            main_window.state_machine.on_error(str(exc))
             speech_service = None
 
     def on_stop() -> None:
@@ -660,6 +741,7 @@ def main() -> None:
     main_window.on_stop(on_stop)
 
     startup_splash.update_stage("启动完成，正在打开主窗口...", 98)
+    _hold_startup_stage(startup_splash, 0.16)
     startup_splash.finish_progress()
     main_window.show()
     startup_splash.close()

@@ -79,6 +79,9 @@ class LiveSpeechUnderstandingService:
         self._sentence_accumulator = SentenceAccumulator()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._ready_event = threading.Event()
+        self._failed_event = threading.Event()
+        self._startup_error = ""
         self._last_text_at = 0.0
         self._sentence_text = ""
         self._sentence_closed = True
@@ -110,12 +113,25 @@ class LiveSpeechUnderstandingService:
         """服务是否正在运行。"""
         return self._thread is not None and self._thread.is_alive()
 
+    @property
+    def ready(self) -> bool:
+        """语音链路所需模型是否已经准备完成。"""
+        return self._ready_event.is_set()
+
+    @property
+    def startup_error(self) -> str:
+        """启动阶段错误信息。"""
+        return self._startup_error
+
     def start(self) -> None:
         """启动后台语音理解链路。"""
         if self.running:
             return
 
         self._stop_event.clear()
+        self._ready_event.clear()
+        self._failed_event.clear()
+        self._startup_error = ""
         self._reset_sentence_state()
         self.audio_source.start()
         self._thread = threading.Thread(
@@ -125,6 +141,26 @@ class LiveSpeechUnderstandingService:
         )
         self._thread.start()
         print("[C] 语音/情绪/LLM 链路已启动", flush=True)
+
+    def wait_until_ready(
+        self,
+        timeout: float = 60.0,
+        progress_callback: Callable[[], None] | None = None,
+    ) -> bool:
+        """等待语音链路完成模型加载。"""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._ready_event.is_set():
+                return True
+            if self._failed_event.is_set():
+                return False
+            if self._thread is not None and not self._thread.is_alive():
+                return False
+            if progress_callback is not None:
+                progress_callback()
+            time.sleep(0.05)
+        self._startup_error = "语音识别模型加载超时"
+        return False
 
     def stop(self, progress_callback: Callable[[], None] | None = None) -> None:
         """停止后台线程并释放识别模块。"""
@@ -139,13 +175,15 @@ class LiveSpeechUnderstandingService:
         self.audio_source.stop()
         self.audio_source.clear()
         self.recognizer.close()
+        self._ready_event.clear()
         self._thread = None
         print("[C] 语音/情绪/LLM 链路已停止", flush=True)
 
     def _run_loop(self) -> None:
         """持续读取音频块并输出情绪与语义结果。"""
         try:
-            self.recognizer.load()
+            self._prepare_models()
+            self._ready_event.set()
             while not self._stop_event.is_set():
                 chunk = self.audio_source.pull(timeout=0.2)
                 if chunk is None:
@@ -163,9 +201,24 @@ class LiveSpeechUnderstandingService:
                 self._consume_asr_text(asr_result.text)
                 self._check_sentence_pause()
         except Exception as exc:  # noqa: BLE001
+            if not self._ready_event.is_set():
+                self._startup_error = f"{type(exc).__name__}: {exc}"
+                self._failed_event.set()
             LOGGER.exception("直播语音理解链路异常：%s", exc)
         finally:
             self.audio_source.stop()
+
+    def _prepare_models(self) -> None:
+        """加载直播语音链路启动后立即需要的模型。"""
+        # FunASR 是语音识别的核心模型，必须加载完成后才允许进入直播页。
+        self.recognizer.load()
+        try:
+            # 情绪模型首次分类时也会加载；这里提前加载，避免开播后第一次识别明显卡顿。
+            self.emotion_classifier.load()
+        except Exception as exc:  # noqa: BLE001
+            if not self.emotion_classifier.config.fallback_to_rules:
+                raise
+            LOGGER.warning("情绪模型预加载失败，后续使用规则兜底：%s", exc)
 
     def _consume_asr_text(self, text: str) -> None:
         """把新增 ASR 文本累积到句子缓冲，满足条件时做整句情绪分类。"""
