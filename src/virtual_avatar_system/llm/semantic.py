@@ -12,11 +12,9 @@ from typing import Any, Final
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from virtual_avatar_system.utils.paths import get_runtime_root
-
 LOGGER = logging.getLogger(__name__)
 
-_PROJECT_ROOT: Final[Path] = get_runtime_root()
+_PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
 _MOTION_MAPS_PATH: Final[Path] = _PROJECT_ROOT / "configs" / "motion_maps.json"
 # 懒加载缓存：{model_name: loaded_data}
 _motion_map_cache: dict[str, dict[str, Any]] = {}
@@ -164,7 +162,7 @@ class SemanticInterpreterConfig:
         if config.api_key and config.model:
             return config
 
-        dotenv = env_path or _PROJECT_ROOT / ".env"
+        dotenv = env_path or Path(__file__).resolve().parents[3] / ".env"
         env_values = _read_env_file(dotenv)
         return cls(
             base_url=config.base_url or env_values.get("LLM_BASE_URL", ""),

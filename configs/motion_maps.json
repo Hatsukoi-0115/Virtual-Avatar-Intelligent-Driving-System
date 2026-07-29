@@ -89,29 +89,7 @@
     }
   },
   "Saki": {
-    "descriptions": [
-      "待机",
-      "点头、认可",
-      "摇头、否认",
-      "思考、讲解",
-      "开心、欢迎"
-    ],
-    "motions": {
-      "待机": [
-        {"label": "saki_idle_param", "group": "ParamPose", "index": 0}
-      ],
-      "点头、认可": [
-        {"label": "saki_nod_param", "group": "ParamPose", "index": 1}
-      ],
-      "摇头、否认": [
-        {"label": "saki_shake_param", "group": "ParamPose", "index": 2}
-      ],
-      "思考、讲解": [
-        {"label": "saki_think_param", "group": "ParamPose", "index": 3}
-      ],
-      "开心、欢迎": [
-        {"label": "saki_happy_param", "group": "ParamPose", "index": 4}
-      ]
-    }
+    "descriptions": [],
+    "motions": {}
   }
 }

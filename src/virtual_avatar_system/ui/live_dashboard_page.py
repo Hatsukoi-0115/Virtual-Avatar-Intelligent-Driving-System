@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
@@ -36,9 +37,8 @@ from virtual_avatar_system.business.comment_advisor import (
 from virtual_avatar_system.comments.bilibili_comment_source import BilibiliComment, BilibiliCommentSource
 from virtual_avatar_system.config.app_config import AppConfig, get_comment_prompt_text
 from virtual_avatar_system.ui.log_panel import LogPanel
-from virtual_avatar_system.utils.paths import get_ui_assets_dir
 
-ASSETS_DIR = get_ui_assets_dir()
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DASHBOARD_CONTENT_MAX_WIDTH = 620
 
 

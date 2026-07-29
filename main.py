@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QIcon
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -32,18 +32,10 @@ from PySide6.QtWidgets import (
 )
 
 # 确保 src 目录在 Python 搜索路径中
-def _get_project_root() -> Path:
-    """获取入口脚本运行根目录，兼容源码运行和 PyInstaller 打包运行。"""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
-
-
-PROJECT_ROOT = _get_project_root()
+PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
-APP_ICON_PATH = SRC_DIR / "virtual_avatar_system" / "ui" / "assets" / "app_icon.ico"
 
 class UiLogHandler(logging.Handler):
     """将 logging 输出安全转发到 Qt 后端输出面板。"""
@@ -286,13 +278,8 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Virtual Avatar Intelligent Driving System")
     app.setOrganizationName("VAIDS")
-    if APP_ICON_PATH.exists():
-        # 全局应用图标用于任务栏、Alt+Tab 和后续新建窗口的默认图标。
-        app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
 
     startup_splash = StartupSplash()
-    if APP_ICON_PATH.exists():
-        startup_splash.setWindowIcon(QIcon(str(APP_ICON_PATH)))
     startup_splash.show()
     startup_splash.update_stage("正在启动虚拟形象智能驱动系统...", 12)
 
@@ -666,7 +653,8 @@ def main() -> None:
             report_path,
         )
         _update_stop_stage("直播已停止")
-        main_window.complete_stop_with_report(report_summary)
+        main_window.state_machine.on_stopped()
+        main_window.show_live_report_summary(report_summary)
 
     main_window.on_start(on_start)
     main_window.on_stop(on_stop)
@@ -713,8 +701,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # PyInstaller 打包后，Live2D 渲染子进程需要通过 freeze_support 正确分流启动逻辑。
-    import multiprocessing as mp
-
-    mp.freeze_support()
     main()

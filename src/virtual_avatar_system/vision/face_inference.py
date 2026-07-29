@@ -21,11 +21,10 @@ from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.core.base_options import BaseOptions
 from mediapipe.tasks.python.vision import face_landmarker
 
-from virtual_avatar_system.utils.paths import get_runtime_root
 from virtual_avatar_system.vision.feature_packet import VisualFeaturePacket
 
 LOGGER = logging.getLogger(__name__)
-PROJECT_ROOT: Final[Path] = get_runtime_root()
+PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
 MODEL_ASSET_PATH: Final[Path] = PROJECT_ROOT / "scripts" / "poc" / "assets" / "face_landmarker.task"
 MODEL_DOWNLOAD_URL: Final[str] = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"

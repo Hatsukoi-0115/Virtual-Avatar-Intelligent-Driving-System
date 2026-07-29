@@ -14,8 +14,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
 
-from virtual_avatar_system.utils.paths import get_ui_asset_path
-
 LOGGER = logging.getLogger(__name__)
 
 
@@ -43,15 +41,13 @@ class AppSystemTray(QSystemTrayIcon):
     # ---- 初始化 ----
 
     def _setup_icon(self) -> None:
-        """设置托盘图标。"""
-        icon_path = get_ui_asset_path("app_icon.ico")
-        if icon_path.exists():
-            # 托盘图标使用应用图标，确保桌面、任务栏和托盘视觉一致。
-            icon = QIcon(str(icon_path))
-        else:
-            icon = QApplication.style().standardIcon(
-                QApplication.style().StandardPixmap.SP_ComputerIcon
-            )
+        """设置托盘图标。
+
+        使用系统内置图标作为占位，后续替换为项目图标。
+        """
+        icon = QApplication.style().standardIcon(
+            QApplication.style().StandardPixmap.SP_ComputerIcon
+        )
         self.setIcon(icon)
         self.setToolTip("虚拟形象驱动系统")
 
